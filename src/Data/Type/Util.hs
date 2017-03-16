@@ -29,6 +29,7 @@ module Data.Type.Util (
   , finIndex
   , replLen
   , replWit
+  , splitAt'
   , itraverse1_
   , ifor1
   , ifor1_
@@ -38,7 +39,6 @@ module Data.Type.Util (
 
 import           Control.Applicative
 import           Data.Bifunctor
--- import           Data.Kind
 import           Data.Monoid hiding    (Sum)
 import           Data.Type.Conjunction
 import           Data.Type.Fin
@@ -50,9 +50,8 @@ import           Data.Type.Sum
 import           Data.Type.Vector
 import           Lens.Micro
 import           Type.Class.Higher
--- import           Type.Class.Known
 import           Type.Class.Witness
--- import           Type.Family.List
+import           Type.Family.List
 import           Type.Family.Nat
 
 -- | @'Replicate' n a@ is a list of @a@s repeated @n@ times.
@@ -223,3 +222,15 @@ lengthProd
 lengthProd x = \case
     LZ   -> Ø
     LS l -> x :< lengthProd x l
+
+splitAt'
+    :: forall f as bs. ()
+    => Length as
+    -> Prod f (as ++ bs)
+    -> (Prod f as, Prod f bs)
+splitAt' = \case
+    LZ -> \case
+      xs -> (Ø, xs)
+    LS l -> \case
+      x :< xs -> case splitAt' l xs of
+        (ys, zs) -> (x :< ys, zs)
