@@ -69,22 +69,24 @@ First, matrix-vector multiplication:
 ``` {.sourceCode .literate .haskell}
 matVec
     :: (KnownNat m, KnownNat n)
-    => Op '[ L m n, R n ] (R m)
-matVec = op2' $ \m v -> ( m #> v
-                        , \(fromMaybe 1 -> g) ->
-                             (g `outer` v, tr m #> g)
-                        )
+    => Op '[ L m n, R n ] '[ R m ]
+matVec = op2' $ \m v ->
+  ( only_ (m #> v)
+  , \(fromMaybe 1 . head' -> g) ->
+        (g `outer` v, tr m #> g)
+  )
 ```
 
 Now, dot products:
 
 ``` {.sourceCode .literate .haskell}
 dot :: KnownNat n
-    => Op '[ R n, R n ] Double
-dot = op2' $ \x y -> ( x <.> y
-                     , \case Nothing -> (y, x)
-                             Just g  -> (konst g * y, x * konst g)
-                     )
+    => Op '[ R n, R n ] '[ Double ]
+dot = op2' $ \x y ->
+  ( only_ (x <.> y)
+  , \case Nothing :< Ø -> (y, x)
+          Just g  :< Ø -> (konst g * y, x * konst g)
+  )
 ```
 
 Polymorphic functions can be easily turned into `Op`s with `op1`/`op2`

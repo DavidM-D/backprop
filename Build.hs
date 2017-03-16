@@ -70,16 +70,18 @@ main = getDirectoryFilesIO "samples" ["/*.lhs", "/*.hs"] >>= \allSamps ->
         createDirectoryIfMissing True "samples-exe"
         createDirectoryIfMissing True ".build"
       removeFilesAfter "samples" ["/*.o"]
-      cmd "stack ghc --" ("samples" </> src)
-                         "-o" f
-                         "-hidir" ".build"
-                         "-threaded"
-                         "-rtsopts"
-                         "-with-rtsopts=-N"
-                         "-Wall"
-                         "-O2"
-                         "-package backprop"
-                         "-package hmatrix"
+      cmd "stack exec" "--package backprop"
+                       "--package hmatrix"
+                       "--"
+                       "ghc"
+                       ("samples" </> src)
+                       "-o" f
+                       "-hidir" ".build"
+                       "-threaded"
+                       "-rtsopts"
+                       "-with-rtsopts=-N"
+                       "-Wall"
+                       "-O2"
 
     ["tags","TAGS"] &%> \_ -> do
       need (("src" </>) <$> allSrc)
