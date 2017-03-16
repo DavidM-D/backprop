@@ -81,6 +81,8 @@ module Numeric.Backprop.Implicit (
   , sinhOp, coshOp, tanhOp, asinhOp, acoshOp, atanhOp
   ) where
 
+import           Data.Bifunctor
+import           Data.Profunctor
 import           Data.Type.Combinator
 import           Data.Type.Index
 import           Data.Type.Length
@@ -186,7 +188,7 @@ partsVar'
     -> BVar s rs a
     -> Prod (BVar s rs) bs
 partsVar' l i r = map1 (\ix -> every @_ @Num ix //
-                                 BP.liftB1 (BP.op1' (f ix)) r
+                                 BP.liftB1 (BP.op1' (fmap (bimap only_ (lmap head')) $ f ix)) r
                        ) ixes
   where
     f :: Num b

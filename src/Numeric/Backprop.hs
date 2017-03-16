@@ -88,7 +88,7 @@ module Numeric.Backprop (
   -- ** Combining
   , liftB, (.$), liftB1, liftB2, liftB3
   -- * Op
-  , op1, op2, op3, opN, composeOp, composeOp1, (~.)
+  , op1, op2, op3, opN, composeOp, (~.)
   , op1', op2', op3'
   -- * Utility
   , pattern (:>), only, head'
@@ -107,9 +107,11 @@ import           Control.Monad.Base
 import           Control.Monad.Reader
 import           Control.Monad.ST
 import           Control.Monad.State
+import           Data.Bifunctor
 import           Data.Kind
 import           Data.Maybe
 import           Data.Monoid               ((<>))
+import           Data.Profunctor
 import           Data.STRef
 import           Data.Type.Combinator
 import           Data.Type.Conjunction
@@ -299,15 +301,16 @@ type BPOpI s rs a = Prod (BVar s rs) rs -> BVar s rs a
 -- 'opVar' can be thought of as a "binding" version of 'liftB'.
 opVar
     :: forall s rs as a. Num a
-    => OpB s as a
+    => OpB s as '[a]
     -> Prod (BVar s rs) as
     -> BP s rs (BVar s rs a)
 opVar o i = do
     xs <- traverse1 (fmap I . BP . resolveVar) i
     (res, gf) <- BP . liftBase $ runOpM' o xs
-    let bp = BPN { _bpnOut       = only $ FRInternal []
-                 , _bpnRes       = only_ res
-                 , _bpnGradFunc  = gf . head'
+    let bp :: BPNode s rs as '[a]
+        bp = BPN { _bpnOut       = only $ FRInternal []
+                 , _bpnRes       = res
+                 , _bpnGradFunc  = gf
                  , _bpnGradCache = Nothing
                  }
     r <- BP . liftBase $ newSTRef bp
@@ -778,7 +781,7 @@ resolveVar = \case
     BVConst    x -> return x
     BVOp    rs o -> do
       xs <- traverse1 (fmap I . resolveVar) rs
-      liftBase $ runOpM o xs
+      liftBase . fmap (getI . head') $ runOpM o xs
 
 registerVar
     :: forall s rs a. ()
@@ -792,13 +795,13 @@ registerVar bpir = \case
     BVConst _      -> return ()
     -- This independently makes a new BPPipe for every usage site of the
     -- BVOp, so it's a bit inefficient.
-    BVOp    (rs :: Prod (BVar s rs) ds) (o :: OpM (ST s) ds a) -> do
+    BVOp    (rs :: Prod (BVar s rs) ds) (o :: OpM (ST s) ds '[a]) -> do
       xs :: Tuple ds <- traverse1 (fmap I . BP . resolveVar) rs
       (res, gF) <- BP . liftBase $ runOpM' o xs
       let bpp :: BPPipe s rs ds '[a]
           bpp = BPP { _bppOut       = only bpir
-                    , _bppRes       = only_ res
-                    , _bppGradFunc  = gF . Just . getI . head'
+                    , _bppRes       = res
+                    , _bppGradFunc  = gF . map1 (Just . getI)
                     , _bppGradCache = Nothing
                     }
       r' <- BP . liftBase $ newSTRef bpp
@@ -831,7 +834,7 @@ registerVar bpir = \case
 infixr 5 ~$
 (~$)
     :: Num a
-    => OpB s as a
+    => OpB s as '[a]
     -> Prod (BVar s rs) as
     -> BP s rs (BVar s rs a)
 (~$) = opVar
@@ -881,7 +884,7 @@ constVar = BVConst
 -- (like one made with 'op1') as well.
 opVar1
     :: Num b
-    => OpB s '[a] b
+    => OpB s '[a] '[b]
     -> BVar s rs a
     -> BP s rs (BVar s rs b)
 opVar1 o = opVar o . only
@@ -904,7 +907,7 @@ opVar1 o = opVar o . only
 -- (like one made with 'op2') as well.
 opVar2
     :: Num c
-    => OpB s '[a,b] c
+    => OpB s '[a,b] '[c]
     -> BVar s rs a
     -> BVar s rs b
     -> BP s rs (BVar s rs c)
@@ -929,7 +932,7 @@ opVar2 o rx ry = opVar o (rx :< ry :< Ø)
 -- (like one made with 'op3') as well.
 opVar3
     :: Num d
-    => OpB s '[a,b,c] d
+    => OpB s '[a,b,c] '[d]
     -> BVar s rs a
     -> BVar s rs b
     -> BVar s rs c
@@ -1043,8 +1046,9 @@ backprop bp env = runST $ do
 bpOp
     :: Every Num rs
     => BPOp s rs a
-    -> OpB s rs a
-bpOp bp = OpM $ backpropWith bp
+    -> OpB s rs '[a]
+bpOp bp = OpM $ fmap (bimap only_ (lmap head'))
+              . backpropWith bp
 
 -- | Simply run the 'BPOp' on an input tuple, getting the result without
 -- bothering with the gradient or with back-propagation.
@@ -1078,7 +1082,7 @@ closeOff isTerminal gOut = \case
     BVConst _     -> return ()
     BVOp    rs o  -> do
       xs <- traverse1 (fmap I . resolveVar) rs
-      gs <- liftBase $ gradOpWithM' o xs gOut
+      gs <- liftBase $ gradOpWithM' o xs (only gOut)
       for1_ (gs `zipP` rs) $ \(I g :&: r) ->
         closeOff False (Just g) r
   where
@@ -1273,7 +1277,7 @@ withInps = withInps' known
 --
 -- 'liftB' can be thought of as a "deferred evaluation" version of 'opVar'.
 liftB
-    :: OpB s as a
+    :: OpB s as '[a]
     -> Prod (BVar s rs) as
     -> BVar s rs a
 liftB = flip BVOp
@@ -1306,7 +1310,7 @@ liftB = flip BVOp
 --
 infixr 5 .$
 (.$)
-    :: OpB s as a
+    :: OpB s as '[a]
     -> Prod (BVar s rs) as
     -> BVar s rs a
 (.$) = liftB
@@ -1331,7 +1335,7 @@ infixr 5 .$
 -- See the documentation for 'liftB' for caveats and potential problematic
 -- situations with this.
 liftB1
-    :: OpB s '[a] b
+    :: OpB s '[a] '[b]
     -> BVar s rs a
     -> BVar s rs b
 liftB1 o = liftB o . only
@@ -1356,7 +1360,7 @@ liftB1 o = liftB o . only
 -- See the documentation for 'liftB' for caveats and potential problematic
 -- situations with this.
 liftB2
-    :: OpB s '[a,b] c
+    :: OpB s '[a,b] '[c]
     -> BVar s rs a
     -> BVar s rs b
     -> BVar s rs c
@@ -1383,7 +1387,7 @@ liftB2 o x y = liftB o (x :< y :< Ø)
 -- See the documentation for 'liftB' for caveats and potential problematic
 -- situations with this.
 liftB3
-    :: OpB s '[a,b,c] d
+    :: OpB s '[a,b,c] '[d]
     -> BVar s rs a
     -> BVar s rs b
     -> BVar s rs c

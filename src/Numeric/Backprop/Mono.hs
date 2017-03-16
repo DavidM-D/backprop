@@ -91,7 +91,7 @@ module Numeric.Backprop.Mono (
   -- ** Combining
   , liftB, (.$), liftB1, liftB2, liftB3
   -- * Op
-  , op1, op2, op3, opN, composeOp, composeOp1, (~.)
+  , op1, op2, op3, opN, composeOp, (~.)
   , op1', op2', op3'
   -- * Utility
   , pattern (:+), (*:), (+:), head'
@@ -291,7 +291,7 @@ type BPOpI s n r a = VecT n (BVar s n r) r -> BVar s n r a
 --
 -- You can think of 'OpB' as a superclass/parent class of 'Op' in this
 -- sense, and of 'Op' as a subclass of 'OpB'.
-type OpB s n a b   = BP.OpB s (Replicate n a) b
+type OpB s q r a b   = BP.OpB s (Replicate q a) (Replicate r b)
 
 -- | Apply an 'OpB' to a 'VecT' (vector) of 'BVar's.
 --
@@ -331,7 +331,7 @@ type OpB s n a b   = BP.OpB s (Replicate n a) b
 -- 'opVar' can be thought of as a "binding" version of 'liftB'.
 opVar
     :: forall s m n r a b. Num b
-    => OpB s m a b
+    => OpB s m N1 a b
     -> VecT m (BVar s n r) a
     -> BP s n r (BVar s n r b)
 opVar o = BP.opVar o . vecToProd
@@ -362,7 +362,7 @@ opVar o = BP.opVar o . vecToProd
 infixr 5 ~$
 (~$)
     :: forall s m n r a b. Num b
-    => OpB s m a b
+    => OpB s m N1 a b
     -> VecT m (BVar s n r) a
     -> BP s n r (BVar s n r b)
 (~$) = opVar @_ @_ @_ @r
@@ -414,7 +414,7 @@ constVar = BP.constVar
 -- (like one made with 'op1') as well.
 opVar1
     :: forall s n r a b. Num b
-    => OpB s N1 a b
+    => OpB s N1 N1 a b
     -> BVar s n r a
     -> BP s n r (BVar s n r b)
 opVar1 o x = opVar @_ @_ @n @r o (x :* ØV)
@@ -437,7 +437,7 @@ opVar1 o x = opVar @_ @_ @n @r o (x :* ØV)
 -- (like one made with 'op2') as well.
 opVar2
     :: forall s n r a b. Num b
-    => OpB s N2 a b
+    => OpB s N2 N1 a b
     -> BVar s n r a
     -> BVar s n r a
     -> BP s n r (BVar s n r b)
@@ -462,7 +462,7 @@ opVar2 o x y = opVar @_ @_ @n @r o (x :* y :* ØV)
 -- (like one made with 'op3') as well.
 opVar3
     :: forall s n r a b. Num b
-    => OpB s N3 a b
+    => OpB s N3 N1 a b
     -> BVar s n r a
     -> BVar s n r a
     -> BVar s n r a
@@ -559,7 +559,7 @@ bpOp'
     :: forall s n r a. Num r
     => Nat n
     -> BPOp s n r a
-    -> OpB s n r a
+    -> OpB s n N1 r a
 bpOp' n b = BP.bpOp b
             \\ replWit n (Wit @(Num r))
 
@@ -576,7 +576,7 @@ bpOp' n b = BP.bpOp b
 bpOp
     :: forall s n r a. (Num r, Known Nat n)
     => BPOp s n r a
-    -> OpB s n r a
+    -> OpB s n N1 r a
 bpOp = bpOp' @_ @_ @r known
 
 
@@ -709,7 +709,7 @@ implicitly f = withInps (return . f)
 -- 'liftB' can be thought of as a "deferred evaluation" version of 'opVar'.
 liftB
     :: forall s m n a b r. ()
-    => OpB s m a b
+    => OpB s m N1 a b
     -> VecT m (BVar s n r) a
     -> BVar s n r b
 liftB o = BP.liftB o . vecToProd
@@ -741,7 +741,7 @@ liftB o = BP.liftB o . vecToProd
 --
 (.$)
     :: forall s m n a b r. ()
-    => OpB s m a b
+    => OpB s m N1 a b
     -> VecT m (BVar s n r) a
     -> BVar s n r b
 o .$ x = liftB @_ @_ @_ @_ @_ @r o x
@@ -765,7 +765,7 @@ o .$ x = liftB @_ @_ @_ @_ @_ @r o x
 -- See the documentation for 'liftB' for caveats and potential problematic
 -- situations with this.
 liftB1
-    :: OpB s N1 a a
+    :: OpB s N1 N1 a a
     -> BVar s n r a
     -> BVar s n r a
 liftB1 = BP.liftB1
@@ -790,7 +790,7 @@ liftB1 = BP.liftB1
 -- See the documentation for 'liftB' for caveats and potential problematic
 -- situations with this.
 liftB2
-    :: OpB s N2 a a
+    :: OpB s N2 N1 a a
     -> BVar s n r a
     -> BVar s n r a
     -> BVar s n r a
@@ -817,7 +817,7 @@ liftB2 = BP.liftB2
 -- See the documentation for 'liftB' for caveats and potential problematic
 -- situations with this.
 liftB3
-    :: OpB s N3 a a
+    :: OpB s N3 N1 a a
     -> BVar s n r a
     -> BVar s n r a
     -> BVar s n r a

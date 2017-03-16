@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ApplicativeDo       #-}
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
@@ -58,8 +59,8 @@ module Numeric.Backprop.Op.Mono (
   -- ** Monadic
   , runOpM, gradOpM, gradOpM', gradOpWithM, gradOpWithM', runOpM'
   -- * Creation
-  , op0, opConst, composeOp, composeOp1, (~.)
-  , opConst', composeOp', composeOp1'
+  , op0, opConst, composeOp, (~.)
+  , opConst'
   -- ** Automatic creation using the /ad/ library
   , op1, op2, op3, opN
   , Replicate
@@ -78,7 +79,6 @@ module Numeric.Backprop.Op.Mono (
   , sinhOp, coshOp, tanhOp, asinhOp, acoshOp, atanhOp
  ) where
 
-import           Data.Bifunctor
 import           Data.Reflection             (Reifies)
 import           Data.Type.Combinator
 import           Data.Type.Nat
@@ -126,7 +126,7 @@ import qualified Numeric.Backprop.Op         as BP
 -- Many functions in this library will expect an @'OpM' m as a@ (or
 -- an @'Numeric.Backprop.Mono.OpB' s as a@), and in all of these cases, you can
 -- provide an @'Op' as a@.
-type Op n a b  = BP.Op (Replicate n a) b
+type Op q r a b  = BP.Op (Replicate q a) (Replicate r b)
 
 -- | An @'OpM' m n a b@ represents a differentiable (monadic) function from
 -- @n@ values of type @a@ to a value of type @b@.
@@ -146,7 +146,7 @@ type Op n a b  = BP.Op (Replicate n a) b
 --
 -- See 'runOpM', 'gradOpM', and 'gradOpWithM' for examples on how to run
 -- it.
-type OpM m n a = BP.OpM m (Replicate n a)
+type OpM m q r a b = BP.OpM m (Replicate q a) (Replicate r b)
 
 -- | Construct an 'Op' by giving a function creating the result, and also
 -- a continuation on how to create the gradient, given the total derivative
@@ -154,15 +154,11 @@ type OpM m n a = BP.OpM m (Replicate n a)
 --
 -- See the module documentation for "Numeric.Backprop.Op" for more details
 -- on the function that this constructor and 'OpM' expect.
-pattern Op :: Known Nat n => (Vec n a -> (b, Maybe b -> Vec n a)) -> Op n a b
-pattern Op runOp' <- BP.Op (\f xs -> (second . fmap) (prodAlong xs)
-                                    . f
-                                    . vecToProd
-                                    $ xs
-                             -> runOp'
-                           )
+pattern Op :: (Known Nat q, Known Nat r) => (Vec q a -> (Vec r b, VecT r Maybe b -> Vec q a)) -> Op q r a b
+pattern Op r <- (runOp' -> r)
   where
-    Op f = BP.Op (\xs -> (second . fmap) vecToProd . f . prodToVec' known $ xs)
+    Op f = BP.Op $ \xs -> case f (prodToVec' known xs) of
+      (ys, g) -> (vecToProd ys, vecToProd . g . prodAlong ys)
 
 -- | Construct an 'OpM' by giving a (monadic) function creating the result,
 -- and also a continuation on how to create the gradient, given the total
@@ -170,15 +166,11 @@ pattern Op runOp' <- BP.Op (\f xs -> (second . fmap) (prodAlong xs)
 --
 -- See the module documentation for "Numeric.Backprop.Op" for more details
 -- on the function that this constructor and 'Op' expect.
-pattern OpM :: (Known Nat n, Functor m) => (Vec n a -> m (b, Maybe b -> m (Vec n a))) -> OpM m n a b
-pattern OpM runOpM' <- BP.OpM (\f xs -> (fmap . second . fmap . fmap) (prodAlong xs)
-                                      . f
-                                      . vecToProd
-                                      $ xs
-                               -> runOpM'
-                              )
+pattern OpM :: (Known Nat q, Known Nat r, Functor m) => (Vec q a -> m (Vec r b, VecT r Maybe b -> m (Vec q a))) -> OpM m q r a b
+pattern OpM r <- (runOpM' -> r)
   where
-    OpM f = BP.OpM (\xs -> (fmap . second . fmap . fmap) vecToProd . f . prodToVec' known $ xs)
+    OpM f = BP.OpM $ \xs -> flip fmap (f (prodToVec' known xs)) $ \(ys, g) ->
+      (vecToProd ys, fmap vecToProd . g . prodAlong ys)
 
 -- | Create an 'Op' that takes no inputs and always returns the given
 -- value.
@@ -193,8 +185,8 @@ pattern OpM runOpM' <- BP.OpM (\f xs -> (fmap . second . fmap . fmap) (prodAlong
 --
 -- Note that because this returns an 'Op', it can be used with any function
 -- that expects an 'OpM' or 'Numeric.Backprop.Mono.OpB', as well.
-op0 :: a -> Op N0 b a
-op0 x = BP.op0 x
+op0 :: Vec r a -> Op N0 r b a
+op0 xs = BP.op0 (vecToProd xs)
 
 -- | A version of 'opConst' taking explicit 'Nat', indicating the
 -- number of inputs required.
@@ -203,21 +195,21 @@ op0 x = BP.op0 x
 -- polymorphic" situations, where GHC can't infer the length of the the
 -- expected input vector.  If you ever actually explicitly write down the
 -- size @n@, you should be able to just use 'opConst'.
-opConst' :: forall n a b. Num b => Nat n -> a -> Op n b a
-opConst' n x = BP.opConst' @_ @a (replLen @n @b n) x
-    \\ replWit n (Wit @(Num b))
+opConst' :: forall q r a b. Num b => Nat q -> Vec r a -> Op q r b a
+opConst' q xs = BP.opConst' (replLen @q @b q) (vecToProd xs)
+    \\ replWit q (Wit @(Num b))
 
 -- | An 'Op' that ignores all of its inputs and returns a given constant
 -- value.
 --
 -- >>> gradOp' (opConst 10) (1 :+ 2 :+ 3 :+ ØV)
 -- (10, 0 :+ 0 :+ 0 :+ ØV)
-opConst :: forall n a b. (Known Nat n, Num b) => a -> Op n b a
-opConst = opConst' @n @a @b n
-    \\ replWit n (Wit @(Num b))
+opConst :: forall q r a b. (Known Nat q, Num b) => Vec r a -> Op q r b a
+opConst = opConst' @q @r @a @b q
+    -- \\ replWit q (Wit @(Num b))
   where
-    n :: Nat n
-    n = known
+    q :: Nat q
+    q = known
 
 -- | Automatically create an 'Op' of a numerical function taking one
 -- argument.  Uses 'Numeric.AD.diff', and so can take any numerical
@@ -227,7 +219,7 @@ opConst = opConst' @n @a @b n
 -- (-0.2, 0.04 :+ ØV)
 op1 :: Num a
     => (forall s. AD s (Forward a) -> AD s (Forward a))
-    -> Op N1 a a
+    -> Op N1 N1 a a
 op1 f = BP.op1 f
 
 -- | Automatically create an 'Op' of a numerical function taking two
@@ -238,7 +230,7 @@ op1 f = BP.op1 f
 -- (6.0, 2.0 :+ 0.75 :+ ØV)
 op2 :: Num a
     => (forall s. Reifies s Tape => Reverse s a -> Reverse s a -> Reverse s a)
-    -> Op N2 a a
+    -> Op N2 N1 a a
 op2 = BP.op2
 
 -- | Automatically create an 'Op' of a numerical function taking three
@@ -249,7 +241,7 @@ op2 = BP.op2
 -- (36.0, 24.0 :+ 9.0 :+ 64.503 :+ ØV)
 op3 :: Num a
     => (forall s. Reifies s Tape => Reverse s a -> Reverse s a -> Reverse s a -> Reverse s a)
-    -> Op N3 a a
+    -> Op N3 N1 a a
 op3 = BP.op3
 
 -- | Automatically create an 'Op' of a numerical function taking multiple
@@ -258,9 +250,9 @@ op3 = BP.op3
 --
 -- >>> gradOp' (opN (\(x :+ y :+ Ø) -> x * sqrt y)) (3 :+ 4 :+ ØV)
 -- (6.0, 2.0 :+ 0.75 :+ ØV)
-opN :: (Num a, Known Nat n)
-    => (forall s. Reifies s Tape => Vec n (Reverse s a) -> Reverse s a)
-    -> Op n a a
+opN :: (Num a, Known Nat q)
+    => (forall s. Reifies s Tape => Vec q (Reverse s a) -> Reverse s a)
+    -> Op q N1 a a
 opN = BP.opN
 
 -- | Create an 'Op' of a function taking one input, by giving its explicit
@@ -306,9 +298,10 @@ opN = BP.opN
 -- For numeric functions, single-input 'Op's can be generated automatically
 -- using 'op1'.
 op1'
-    :: (a -> (b, Maybe b -> a))
-    -> Op N1 a b
-op1' = BP.op1'
+    :: (a -> (Vec r b, VecT r Maybe b -> a))
+    -> Op N1 r a b
+op1' f = BP.op1' $ \x -> case f x of
+    (ys, g) -> (vecToProd ys, g . prodAlong ys)
 
 -- | Create an 'Op' of a function taking two inputs, by giving its explicit
 -- gradient.  The function should return a tuple containing the result of
@@ -355,16 +348,18 @@ op1' = BP.op1'
 -- For numeric functions, two-input 'Op's can be generated automatically
 -- using 'op2'.
 op2'
-    :: (a -> a -> (b, Maybe b -> (a, a)))
-    -> Op N2 a b
-op2' = BP.op2'
+    :: (a -> a -> (Vec r b, VecT r Maybe b -> (a, a)))
+    -> Op N2 r a b
+op2' f = BP.op2' $ \x y -> case f x y of
+    (zs, g) -> (vecToProd zs, g . prodAlong zs)
 
 -- | Create an 'Op' of a function taking three inputs, by giving its explicit
 -- gradient.  See documentation for 'op2'' for more details.
 op3'
-    :: (a -> a -> a -> (b, Maybe b -> (a, a, a)))
-    -> Op N3 a b
-op3' = BP.op3'
+    :: (a -> a -> a -> (Vec r b, VecT r Maybe b -> (a, a, a)))
+    -> Op N3 r a b
+op3' f = BP.op3' $ \x y z -> case f x y z of
+    (qs, g) -> (vecToProd qs, g . prodAlong qs)
 
 -- | A combination of 'runOp' and 'gradOpWith''.  Given an 'Op' and inputs,
 -- returns the result of the 'Op' and a continuation that gives its
@@ -373,17 +368,15 @@ op3' = BP.op3'
 -- The continuation takes the total derivative of the result as input.  See
 -- documenation for 'gradOpWith'' and module documentation for
 -- "Numeric.Backprop.Op" for more information.
-runOp' :: Op n a b -> Vec n a -> (b, Maybe b -> Vec n a)
-runOp' o xs = (second . fmap) (prodAlong xs)
-            . BP.runOp' o
-            . vecToProd
-            $ xs
+runOp' :: Known Nat r => Op q r a b -> Vec q a -> (Vec r b, VecT r Maybe b -> Vec q a)
+runOp' o xs = case BP.runOp' o (vecToProd xs) of
+    (ys, g) -> (prodToVec' known ys, prodAlong xs . g . vecToProd)
 
 -- | Run the function that an 'Op' encodes, to get the result.
 --
 -- >>> runOp (op2 (*)) (3 :+ 5 :+ Ø)
 -- 15
-runOp :: Op n a b -> Vec n a -> b
+runOp :: Known Nat r => Op q r a b -> Vec q a -> Vec r b
 runOp o = fst . runOp' o
 
 -- | A combination of 'gradOp' and 'gradOpWith'.  The third argument is
@@ -395,7 +388,7 @@ runOp o = fst . runOp' o
 --
 -- See 'gradOp' and the module documentaiton for "Numeric.Backprop.Op" for
 -- more information.
-gradOpWith' :: Op n a b -> Vec n a -> Maybe b -> Vec n a
+gradOpWith' :: forall q r a b. Known Nat r => Op q r a b -> Vec q a -> VecT r Maybe b -> Vec q a
 gradOpWith' o = snd . runOp' o
 
 -- | Run the function that an 'Op' encodes, and get the gradient of
@@ -404,8 +397,8 @@ gradOpWith' o = snd . runOp' o
 --
 -- See 'gradOp' and the module documentaiton for "Numeric.Backprop.Op" for
 -- more information.
-gradOpWith :: Op n a b -> Vec n a -> b -> Vec n a
-gradOpWith o i = gradOpWith' o i . Just
+gradOpWith :: forall q r a b. Known Nat r => Op q r a b -> Vec q a -> Vec r b -> Vec q a
+gradOpWith o i = gradOpWith' @_ @_ @_ @b o i . vmap (Just . getI)
 
 -- | Run the function that an 'Op' encodes, and get the gradient of the
 -- output with respect to the inputs.
@@ -413,110 +406,79 @@ gradOpWith o i = gradOpWith' o i . Just
 -- >>> gradOp (op2 (*)) (3 :+ 5 :+ ØV)
 -- 5 :+ 3 :+ ØV
 -- -- the gradient of x*y is (y, x)
-gradOp :: Op n a b -> Vec n a -> Vec n a
-gradOp o i = gradOpWith' o i Nothing
+gradOp :: forall q r a b. Known Nat r => Op q r a b -> Vec q a -> Vec q a
+gradOp o i = gradOpWith' @_ @_ @_ @b o i (replVec known Nothing)
 
 -- | Run the function that an 'Op' encodes, to get the resulting output and
 -- also its gradient with respect to the inputs.
 --
 -- >>> gradOpM' (op2 (*)) (3 :+ 5 :+ ØV) :: IO (Int, Vec N2 Int)
 -- (15, 5 :+ 3 :+ ØV)
-gradOp' :: Op n a b -> Vec n a -> (b, Vec n a)
-gradOp' o = second ($ Nothing) . runOp' o
+gradOp' :: Known Nat r => Op q r a b -> Vec q a -> (Vec r b, Vec q a)
+gradOp' o xs = case runOp' o xs of
+    (ys, gF) -> (ys, gF (vmap (\_ -> Nothing) ys))
 
 -- | The monadic version of 'runOp', for 'OpM's.
 --
 -- >>> runOpM (op2 (*)) (3 :+ 5 :+ ØV) :: IO Int
 -- 15
-runOpM' :: Functor m => OpM m n a b -> Vec n a -> m (b, Maybe b -> m (Vec n a))
-runOpM' o xs = (fmap . second . fmap . fmap) (prodAlong xs)
-             . BP.runOpM' o
-             . vecToProd
-             $ xs
+runOpM'
+    :: forall m q r a b. (Functor m, Known Nat r)
+    => OpM m q r a b
+    -> Vec q a
+    -> m (Vec r b, VecT r Maybe b -> m (Vec q a))
+runOpM' o xs = flip fmap (BP.runOpM' o (vecToProd xs)) $ \(ys, gF) ->
+    let gF' :: VecT r Maybe b -> m (Vec q a)
+        gF' dy = do
+          dx <- gF (vecToProd dy)
+          pure (prodAlong xs dx)
+    in  (prodToVec' known ys, gF')
 
 -- | The monadic version of 'runOp', for 'OpM's.
 --
 -- >>> runOpM (op2 (*)) (3 :+ 5 :+ ØV) :: IO Int
 -- 15
-runOpM :: Functor m => OpM m n a b -> Vec n a -> m b
+runOpM :: (Functor m, Known Nat r) => OpM m q r a b -> Vec q a -> m (Vec r b)
 runOpM o = fmap fst . runOpM' o
 
 -- | The monadic version of 'gradOp', for 'OpM's.
-gradOpM :: Monad m => OpM m n a b -> Vec n a -> m (Vec n a)
-gradOpM o i = do
-    (_, gF) <- runOpM' o i
-    gF Nothing
+gradOpM :: forall m q r a b. (Monad m, Known Nat r) => OpM m q r a b -> Vec q a -> m (Vec q a)
+gradOpM o xs = do
+    (ys, gF) <- runOpM' @_ @_ @_ @_ @b o xs
+    gF (vmap (\_ -> Nothing) ys)
 
 -- | The monadic version of 'gradOp'', for 'OpM's.
-gradOpM' :: Monad m => OpM m n a b -> Vec n a -> m (b, Vec n a)
-gradOpM' o i = do
-    (x, gF) <- runOpM' o i
-    g <- gF Nothing
-    return (x, g)
+gradOpM' :: (Monad m, Known Nat r) => OpM m q r a b -> Vec q a -> m (Vec r b, Vec q a)
+gradOpM' o xs = do
+    (ys, gF) <- runOpM' o xs
+    g        <- gF (vmap (\_ -> Nothing) ys)
+    return (ys, g)
 
 -- | The monadic version of 'gradOpWith'', for 'OpM's.
-gradOpWithM' :: Monad m => OpM m n a b -> Vec n a -> Maybe b -> m (Vec n a)
-gradOpWithM' o i d = do
+gradOpWithM' :: Monad m => OpM m q r a b -> Vec q a -> VecT r Maybe b -> m (Vec q a)
+gradOpWithM' o i d = d // do
     (_, gF) <- runOpM' o i
     gF d
 
 -- | The monadic version of 'gradOpWith', for 'OpM's.
-gradOpWithM :: Monad m => OpM m n a b -> Vec n a -> b -> m (Vec n a)
-gradOpWithM o i d = do
+gradOpWithM :: Monad m => OpM m q r a b -> Vec q a -> Vec r b -> m (Vec q a)
+gradOpWithM o i d = d // do
     (_, gF) <- runOpM' o i
-    gF (Just d)
+    gF (vmap (Just . getI) d)
 
--- | A version of 'composeOp' taking explicit 'Nat', indicating the
--- number of inputs expected in the first 'Op's
---
--- Requiring an explicit 'Nat' is mostly useful for rare "extremely
--- polymorphic" situations, where GHC can't infer the length of the the
--- expected input vector.  If you ever actually explicitly write down the
--- size @n@, you should be able to just use 'composeOp'.
-composeOp'
-    :: forall m n o a b c. (Monad m, Num a)
-    => Nat n
-    -> VecT o (OpM m n a) b
-    -> OpM m o b c
-    -> OpM m n a c
-composeOp' n v o = BP.composeOp' (replLen @_ @a n) (vecToProd v) o
-                      \\ replWit n (Wit @(Num a))
+    -- :: forall m as bs cs. Monad m
+    -- => OpM m as bs
+    -- -> OpM m bs cs
+    -- -> OpM m as cs
 
--- | Compose 'OpM's together, similar to '.'.  But, because all 'OpM's are
--- \(\mathbb{R}^N \rightarrow \mathbb{R}\), this is more like 'sequence'
--- for functions, or @liftAN@.
---
--- That is, given an @o@ of @'OpM' m n a b@s, it can compose them with an
--- @'OpM' m o b c@ to create an @'OpM' m o a c@.
 composeOp
-    :: forall m n o a b c. (Monad m, Num a, Known Nat n)
-    => VecT o (OpM m n a) b
-    -> OpM m o b c
-    -> OpM m n a c
-composeOp = composeOp' @m @n @o @a @b @c known
+    :: forall m q r s a b c. Monad m
+    => OpM m q r a b
+    -> OpM m r s b c
+    -> OpM m q s a c
+composeOp f g = BP.composeOp f g
 
--- | Convenient wrappver over 'composeOp' for the case where the second
--- function only takes one input, so the two 'OpM's can be directly piped
--- together, like for '.'.
-composeOp1'
-    :: forall m n a b c. (Monad m, Num a)
-    => Nat n
-    -> OpM m n a b
-    -> OpM m N1 b c
-    -> OpM m n a c
-composeOp1' n v o = composeOp' @_ @_ @_ @a n (v :* ØV) o
-
--- | Convenient wrappver over 'composeOp' for the case where the second
--- function only takes one input, so the two 'OpM's can be directly piped
--- together, like for '.'.
-composeOp1
-    :: forall m n a b c. (Monad m, Num a, Known Nat n)
-    => OpM m n a b
-    -> OpM m N1 b c
-    -> OpM m n a c
-composeOp1 v o = composeOp @_ @_ @_ @a (v :* ØV) o
-
--- | Convenient infix synonym for (flipped) 'composeOp1'.  Meant to be used
+-- | Convenient infix synonym for (flipped) 'composeOp'.  Meant to be used
 -- just like '.':
 --
 -- @
@@ -527,11 +489,11 @@ composeOp1 v o = composeOp @_ @_ @_ @a (v :* ØV) o
 -- @
 infixr 9 ~.
 (~.)
-    :: forall m n a b c. (Monad m, Num a, Known Nat n)
-    => OpM m N1 b c
-    -> OpM m n a b
-    -> OpM m n a c
-f ~. g = composeOp1 @_ @_ @a g f
+    :: forall m q r s a b c. Monad m
+    => OpM m r s b c
+    -> OpM m q r a b
+    -> OpM m q s a c
+f ~. g = composeOp @_ @_ @_ @_ @a @b @c g f
 
 -- $numops
 --
@@ -553,101 +515,101 @@ f ~. g = composeOp1 @_ @_ @a g f
 -- @
 
 -- | Optimized version of @'op2' ('+')@.
-(+.) :: Num a => Op N2 a a
+(+.) :: Num a => Op N2 N1 a a
 (+.) = (BP.+.)
 
 -- | Optimized version of @'op2' ('-')@.
-(-.) :: Num a => Op N2 a a
+(-.) :: Num a => Op N2 N1 a a
 (-.) = (BP.-.)
 
 -- | Optimized version of @'op2' ('*')@.
-(*.) :: Num a => Op N2 a a
+(*.) :: Num a => Op N2 N1 a a
 (*.) = (BP.*.)
 
 -- | Optimized version of @'op2' ('/')@.
-(/.) :: Fractional a => Op N2 a a
+(/.) :: Fractional a => Op N2 N1 a a
 (/.) = (BP./.)
 
 -- | Optimized version of @'op2' ('**')@.
-(**.) :: Floating a => Op N2 a a
+(**.) :: Floating a => Op N2 N1 a a
 (**.) = (BP.**.)
 
 -- | Optimized version of @'op1' 'negate'@.
-negateOp :: Num a => Op N1 a a
+negateOp :: Num a => Op N1 N1 a a
 negateOp = BP.negateOp
 
 -- | Optimized version of @'op1' 'signum'@.
-signumOp :: Num a => Op N1 a a
+signumOp :: Num a => Op N1 N1 a a
 signumOp = BP.signumOp
 
 -- | Optimized version of @'op1' 'abs'@.
-absOp :: Num a => Op N1 a a
+absOp :: Num a => Op N1 N1 a a
 absOp = BP.absOp
 
 -- | Optimized version of @'op1' 'recip'@.
-recipOp :: Fractional a => Op N1 a a
+recipOp :: Fractional a => Op N1 N1 a a
 recipOp = BP.recipOp
 
 -- | Optimized version of @'op1' 'exp'@.
-expOp :: Floating a => Op N1 a a
+expOp :: Floating a => Op N1 N1 a a
 expOp = BP.expOp
 
 -- | Optimized version of @'op1' 'log'@.
-logOp :: Floating a => Op N1 a a
+logOp :: Floating a => Op N1 N1 a a
 logOp = BP.logOp
 
 -- | Optimized version of @'op1' 'sqrt'@.
-sqrtOp :: Floating a => Op N1 a a
+sqrtOp :: Floating a => Op N1 N1 a a
 sqrtOp = BP.sqrtOp
 
 -- | Optimized version of @'op2' 'logBase'@.
-logBaseOp :: Floating a => Op N2 a a
+logBaseOp :: Floating a => Op N2 N1 a a
 logBaseOp = BP.logBaseOp
 
 -- | Optimized version of @'op1' 'sin'@.
-sinOp :: Floating a => Op N1 a a
+sinOp :: Floating a => Op N1 N1 a a
 sinOp = BP.sinOp
 
 -- | Optimized version of @'op1' 'cos'@.
-cosOp :: Floating a => Op N1 a a
+cosOp :: Floating a => Op N1 N1 a a
 cosOp = BP.cosOp
 
 -- | Optimized version of @'op1' 'tan'@.
-tanOp :: Floating a => Op N1 a a
+tanOp :: Floating a => Op N1 N1 a a
 tanOp = BP.tanOp
 
 -- | Optimized version of @'op1' 'asin'@.
-asinOp :: Floating a => Op N1 a a
+asinOp :: Floating a => Op N1 N1 a a
 asinOp = BP.asinOp
 
 -- | Optimized version of @'op1' 'acos'@.
-acosOp :: Floating a => Op N1 a a
+acosOp :: Floating a => Op N1 N1 a a
 acosOp = BP.acosOp
 
 -- | Optimized version of @'op1' 'atan'@.
-atanOp :: Floating a => Op N1 a a
+atanOp :: Floating a => Op N1 N1 a a
 atanOp = BP.atanOp
 
 -- | Optimized version of @'op1' 'sinh'@.
-sinhOp :: Floating a => Op N1 a a
+sinhOp :: Floating a => Op N1 N1 a a
 sinhOp = BP.sinhOp
 
 -- | Optimized version of @'op1' 'cosh'@.
-coshOp :: Floating a => Op N1 a a
+coshOp :: Floating a => Op N1 N1 a a
 coshOp = BP.coshOp
 
 -- | Optimized version of @'op1' 'tanh'@.
-tanhOp :: Floating a => Op N1 a a
+tanhOp :: Floating a => Op N1 N1 a a
 tanhOp = BP.tanhOp
 
 -- | Optimized version of @'op1' 'asinh'@.
-asinhOp :: Floating a => Op N1 a a
+asinhOp :: Floating a => Op N1 N1 a a
 asinhOp = BP.asinhOp
 
 -- | Optimized version of @'op1' 'acosh'@.
-acoshOp :: Floating a => Op N1 a a
+acoshOp :: Floating a => Op N1 N1 a a
 acoshOp = BP.acoshOp
 
 -- | Optimized version of @'op1' 'atanh'@.
-atanhOp :: Floating a => Op N1 a a
+atanhOp :: Floating a => Op N1 N1 a a
 atanhOp = BP.atanhOp

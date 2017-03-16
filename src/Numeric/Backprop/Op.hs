@@ -233,7 +233,7 @@ type Op as bs = forall m. Monad m => OpM m as bs
 -- See the module documentation for "Numeric.Backprop.Op" for more details
 -- on the function that this constructor and 'OpM' expect.
 pattern Op :: (Tuple as -> (Tuple bs, Prod Maybe bs -> Tuple as)) -> Op as bs
-pattern Op runOp' <- OpM (\f -> (second . fmap) getI . getI . f -> runOp')
+pattern Op r <- (runOp' -> r)
   where
     Op f = OpM (pure . (second . fmap) pure . f)
 
@@ -277,6 +277,7 @@ composeOp f g = OpM $ \xs -> do
           gF (map1 (Just . getI) dys)
     return (zs, gH)
 
+infixr 9 ~.
 (~.)
     :: forall m as bs cs. Monad m
     => OpM m bs cs

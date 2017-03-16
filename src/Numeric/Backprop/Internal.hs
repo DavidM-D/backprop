@@ -69,7 +69,7 @@ import           Numeric.Backprop.Op
 --
 -- You can think of 'OpB' as a superclass/parent class of 'Op' in this
 -- sense, and of 'Op' as a subclass of 'OpB'.
-type OpB s as a = OpM (ST s) as a
+type OpB s = OpM (ST s)
 
 -- | Reference to /usage sites/ for a given entity, used to get partial or
 -- total derivatives.
@@ -186,7 +186,7 @@ data BVar :: Type -> [Type] -> Type -> Type where
     -- | A BVar that combines several other BVars using a function (an
     -- 'Op').  Essentially a branch of a tree.
     BVOp    :: !(Prod (BVar s rs) as)
-            -> !(OpB s as a)
+            -> !(OpB s as '[a])
             -> BVar s rs a
 
 -- | Used exclusively by 'ForwardRefs' to specify "where" and "how" to look

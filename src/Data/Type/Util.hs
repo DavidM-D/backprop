@@ -29,6 +29,7 @@ module Data.Type.Util (
   , finIndex
   , replLen
   , replWit
+  , replVec
   , splitAt'
   , itraverse1_
   , ifor1
@@ -82,7 +83,7 @@ prodToVec' = \case
       x :< xs -> x :* prodToVec' n xs
 
 prodAlong
-    :: VecT n f b
+    :: VecT n g b
     -> Prod f (Replicate n a)
     -> VecT n f a
 prodAlong = \case
@@ -214,6 +215,15 @@ replLen
 replLen = \case
     Z_   -> LZ
     S_ n -> LS (replLen @_ @a n)
+
+replVec
+    :: Nat n
+    -> f a
+    -> VecT n f a
+replVec = \case
+    Z_   -> \_ -> ØV
+    S_ n -> \x ->
+      x :* replVec n x
 
 lengthProd
     :: (forall a. f a)
