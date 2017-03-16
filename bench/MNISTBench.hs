@@ -57,32 +57,34 @@ instance NFData (Network i h1 h2 o)
 
 matVec
     :: (KnownNat m, KnownNat n)
-    => Op '[ L m n, R n ] (R m)
+    => Op '[ L m n, R n ] '[ R m ]
 matVec = op2' $ \m v ->
-  ( m #> v, \(fromMaybe 1 -> g) ->
-              (g `outer` v, tr m #> g)
+  ( only_ (m #> v)
+  , \(fromMaybe 1 . head' -> g) ->
+        (g `outer` v, tr m #> g)
   )
 
 dot :: KnownNat n
-    => Op '[ R n, R n ] Double
+    => Op '[ R n, R n ] '[ Double ]
 dot = op2' $ \x y ->
-  ( x <.> y, \case Nothing -> (y, x)
-                   Just g  -> (konst g * y, x * konst g)
+  ( only_ (x <.> y)
+  , \case Nothing :< Ø -> (y, x)
+          Just g  :< Ø -> (konst g * y, x * konst g)
   )
 
 scale
     :: KnownNat n
-    => Op '[ Double, R n ] (R n)
+    => Op '[ Double, R n ] '[ R n ]
 scale = op2' $ \a x ->
-  ( konst a * x
-  , \case Nothing -> (HM.sumElements (extract x      ), konst a    )
-          Just g  -> (HM.sumElements (extract (x * g)), konst a * g)
+  ( only_ (konst a * x)
+  , \case Nothing :< Ø -> (HM.sumElements (extract x      ), konst a    )
+          Just g  :< Ø -> (HM.sumElements (extract (x * g)), konst a * g)
   )
 
 vsum
     :: KnownNat n
-    => Op '[ R n ] Double
-vsum = op1' $ \x -> (HM.sumElements (extract x), maybe 1 konst)
+    => Op '[ R n ] '[ Double ]
+vsum = op1' $ \x -> (only_ (HM.sumElements (extract x)), maybe 1 konst . head')
 
 logistic :: Floating a => a -> a
 logistic x = 1 / (1 + exp (-x))
