@@ -107,10 +107,10 @@ single-hidden-layer neural network:
 simpleOp
       :: (KnownNat m, KnownNat n, KnownNat o)
       => R m
-      -> BPOpI s '[ L n m, R n, L o n, R o ] (R o)
+      -> BPOpI s '[ L n m, R n, L o n, R o ] '[ R o ]
 simpleOp inp = \(w1 :< b1 :< w2 :< b2 :< Ø) ->
     let z = logistic $ liftB2 matVec w1 x + b1
-    in  logistic $ liftB2 matVec w2 z + b2
+    in  only . logistic $ liftB2 matVec w2 z + b2
   where
     x = constVar inp
 ```
@@ -125,7 +125,7 @@ runSimple
     :: (KnownNat m, KnownNat n, KnownNat o)
     => R m
     -> Tuple '[ L n m, R n, L o n, R o ]
-    -> R o
+    -> Tuple '[ R o ]
 runSimple inp = evalBPOp (implicitly $ simpleOp inp)
 ```
 
@@ -136,14 +136,14 @@ we specify our graph nodes explicitly. The results should be the same.
 simpleOpExplicit
       :: (KnownNat m, KnownNat n, KnownNat o)
       => R m
-      -> BPOp s '[ L n m, R n, L o n, R o ] (R o)
+      -> BPOp s '[ L n m, R n, L o n, R o ] '[ R o ]
 simpleOpExplicit inp = withInps $ \(w1 :< b1 :< w2 :< b2 :< Ø) -> do
     -- First layer
     y1  <- matVec ~$ (w1 :< x1 :< Ø)
     let x2 = logistic (y1 + b1)
     -- Second layer
     y2  <- matVec ~$ (w2 :< x2 :< Ø)
-    return $ logistic (y2 + b2)
+    return . only $ logistic (y2 + b2)
   where
     x1 = constVar inp
 ```
@@ -160,12 +160,13 @@ simpleGrad
     -> Tuple '[ L n m, R n, L o n, R o ]
 simpleGrad inp targ params = gradBPOp opError params
   where
-    opError :: BPOp s '[ L n m, R n, L o n, R o ] Double
+    opError :: BPOp s '[ L n m, R n, L o n, R o ] '[ Double ]
     opError = do
-        res <- implicitly $ simpleOp inp
+        res :< Ø <- implicitly $ simpleOp inp
         -- we explicitly bind err to prevent recomputation
         err <- bindVar $ res - t
-        dot ~$ (err :< err :< Ø)
+        out <- dot ~$ (err :< err :< Ø)
+        return $ only out
       where
         t = constVar targ
 ```
@@ -244,33 +245,35 @@ different network constructors differently.
 netOp
     :: forall s a bs c. (KnownNat a, KnownNat c)
     => Sing bs
-    -> BPOp s '[ R a, Network a bs c ] (R c)
+    -> BPOp s '[ R a, Network a bs c ] '[ R c ]
 netOp sbs = go sbs
   where
     go :: forall d es. KnownNat d
         => Sing es
-        -> BPOp s '[ R d, Network d es c ] (R c)
+        -> BPOp s '[ R d, Network d es c ] '[ R c ]
     go = \case
       SNil -> withInps $ \(x :< n :< Ø) -> do
         -- peek into the NØ using netExternal iso
         l :< Ø <- netExternal #<~ n
         -- run the 'layerOp' BP, with x and l as inputs
-        bpOp layerOp ~$ (x :< l :< Ø)
+        z <- bpOp layerOp ~$ (x :< l :< Ø)
+        return $ only z
       SNat `SCons` ses -> withInps $ \(x :< n :< Ø) -> withSingI ses $ do
         -- peek into the (:&) using the netInternal iso
         l :< n' :< Ø <- netInternal #<~ n
         -- run the 'layerOp' BP, with x and l as inputs
         z <- bpOp layerOp  ~$ (x :< l :< Ø)
         -- run the 'go ses' BP, with z and n as inputs
-        bpOp (go ses)      ~$ (z :< n' :< Ø)
+        o <- bpOp (go ses)      ~$ (z :< n' :< Ø)
+        return $ only o
     layerOp
         :: forall d e. (KnownNat d, KnownNat e)
-        => BPOp s '[ R d, Layer d e ] (R e)
+        => BPOp s '[ R d, Layer d e ] '[ R e ]
     layerOp = withInps $ \(x :< l :< Ø) -> do
         -- peek into the layer using the gTuple iso, auto-generated with SOP.Generic
         w :< b :< Ø <- gTuple #<~ l
         y           <- matVec  ~$ (w :< x :< Ø)
-        return $ logistic (y + b)
+        return . only $ logistic (y + b)
 ```
 
 There’s some singletons work going on here, but it’s fairly standard
@@ -295,10 +298,11 @@ errOp
     :: KnownNat m
     => R m
     -> BVar s rs (R m)
-    -> BPOp s rs Double
+    -> BPOp s rs '[ Double ]
 errOp targ r = do
     err <- bindVar $ r - t
-    dot ~$ (err :< err :< Ø)
+    out <- dot ~$ (err :< err :< Ø)
+    return $ only out
   where
     t = constVar targ
 ```
@@ -316,7 +320,7 @@ train
     -> R c
     -> Network a bs c
     -> Network a bs c
-train r x t n = case backprop (errOp t =<< netOp sing) (x ::< n ::< Ø) of
+train r x t n = case backprop (errOp t . head' =<< netOp sing) (x ::< n ::< Ø) of
     (_, _ :< I g :< Ø) -> n - (realToFrac r * g)
 ```
 
