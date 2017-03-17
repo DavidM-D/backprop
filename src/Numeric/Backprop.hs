@@ -75,6 +75,7 @@ module Numeric.Backprop (
   , (-$)
   , opVarMulti, (~$$), (-$$)
   -- ** Var manipulation
+  , isoVar
   -- *** As parts
   , partsVar, (#<~), withParts
   , splitVars, gSplit, gTuple
@@ -415,6 +416,28 @@ partsVar
     -> BVar s rs b
     -> BP s rs (Prod (BVar s rs) bs)
 partsVar i = fmap (view sum1) . sopVar (i . resum1)
+
+isoVar
+    :: forall s rs as bs. (Every Num bs)
+    => Iso' (Tuple as) (Tuple bs)
+    -> Prod (BVar s rs) as
+    -> BPOp s rs bs
+isoVar i vs = do
+    xs <- traverse1 (fmap I . BP . resolveVar) vs
+
+    let ys :: Tuple bs
+        ys = view i xs
+        bp :: BPNode s rs as bs
+        bp = BPN { _bpnOut       = map1 (\_ -> FRInternal []) ys
+                 , _bpnRes       = ys
+                 , _bpnGradFunc  = return . review i
+                                 . imap1 (\ix -> every @_ @Num ix // maybe (I 1) I)
+                 , _bpnGradCache = Nothing
+                 }
+    r <- BP . liftBase $ newSTRef bp
+    itraverse1_ (\ix v -> registerVar (IRNode ix r) v) vs
+    return $ imap1 (\ix _ -> BVNode ix r) ys
+
 
 -- | A useful infix alias for 'partsVar'.
 --
