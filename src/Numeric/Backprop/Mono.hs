@@ -244,7 +244,7 @@ type BVar s n a    = BP.BVar s (Replicate n a)
 --
 -- See documentation for 'BP' for an explanation of the phantom type
 -- parameter @s@.
-type BPOp s n r a  = BP s n r (BVar s n r a)
+type BPOp s n m r a  = BP s n r (VecT m (BVar s n r) a)
 
 -- | An "implicit" operation on 'BVar's that can be backpropagated.
 -- A value of type:
@@ -268,7 +268,7 @@ type BPOp s n r a  = BP s n r (BVar s n r a)
 -- function, which can convert "implicit" backprop functions like
 -- a @'BPOpI' s rs a@ into an "explicit" graph backprop function, a @'BPOp'
 -- s rs a@.
-type BPOpI s n r a = VecT n (BVar s n r) r -> BVar s n r a
+type BPOpI s n m r a = VecT n (BVar s n r) r -> VecT m (BVar s n r) a
 
 -- | A subclass of 'Numeric.Backprop.Op.Mono.OpM' (and superclass of 'Op'),
 -- representing 'Op's that the /backprop/ library uses to perform
@@ -385,7 +385,7 @@ infixr 5 ~$
 infixr 5 -$
 (-$)
     :: forall s m n r a b. (Num a, Num b, Known Nat m)
-    => BPOp s m a b
+    => BPOp s m N1 a b
     -> VecT m (BVar s n r) a
     -> BP s n r (BVar s n r b)
 o -$ xs = opVar @_ @_ @_ @r (bpOp @_ @_ @a @b o) xs
@@ -521,29 +521,29 @@ bindVar = BP.bindVar
 -- respect to its inputs.  See module header for "Numeric.Backprop.Mono"
 -- and package documentation for examples and usages.
 backprop
-    :: forall n r a. Num r
-    => (forall s. BPOp s n r a)
+    :: forall n m r a. (Num r, Known Nat m)
+    => (forall s. BPOp s n m r a)
     -> Vec n r
-    -> (a, Vec n r)
-backprop bp i = (x, prodAlong i g)
+    -> (Vec m a, Vec n r)
+backprop bp i = (prodToVec' known x, prodAlong i g)
   where
-    (x, g) = BP.backprop bp (vecToProd i)
+    (x, g) = BP.backprop (vecToProd <$> bp) (vecToProd i)
               \\ replWit (vecLength i) (Wit @(Num r))
 
 -- | Simply run the 'BPOp' on an input vector, getting the result without
 -- bothering with the gradient or with back-propagation.
 evalBPOp
-    :: forall n r a. ()
-    => (forall s. BPOp s n r a)
+    :: forall n m r a. Known Nat m
+    => (forall s. BPOp s n m r a)
     -> Vec n r
-    -> a
-evalBPOp bp = BP.evalBPOp bp . vecToProd
+    -> Vec m a
+evalBPOp bp = prodToVec' known . BP.evalBPOp (vecToProd <$> bp) . vecToProd
 
 -- | Run the 'BPOp' on an input vector and return the gradient of the result
 -- with respect to the input vector
 gradBPOp
-    :: forall n r a. Num r
-    => (forall s. BPOp s n r a)
+    :: forall n m r a. (Num r, Known Nat m)
+    => (forall s. BPOp s n m r a)
     -> Vec n r
     -> Vec n r
 gradBPOp bp = snd . backprop bp
@@ -556,11 +556,11 @@ gradBPOp bp = snd . backprop bp
 -- expected input vector.  If you ever actually explicitly write down the
 -- size @n@, you should be able to just use 'opConst'.
 bpOp'
-    :: forall s n r a. Num r
+    :: forall s n m r a. Num r
     => Nat n
-    -> BPOp s n r a
-    -> OpB s n N1 r a
-bpOp' n b = BP.bpOp b
+    -> BPOp s n m r a
+    -> OpB s n m r a
+bpOp' n b = BP.bpOp (vecToProd <$> b)
             \\ replWit n (Wit @(Num r))
 
 -- | Turn a 'BPOp' into an 'OpB'.  Basically converts a 'BP' taking @n@
@@ -575,9 +575,9 @@ bpOp' n b = BP.bpOp b
 -- the 'Op'-related functions in this moduel, including 'opVar', '~$', etc.
 bpOp
     :: forall s n r a. (Num r, Known Nat n)
-    => BPOp s n r a
+    => BPOp s n N1 r a
     -> OpB s n N1 r a
-bpOp = bpOp' @_ @_ @r known
+bpOp = bpOp' @_ @_ @_ @r known
 
 
 -- | Create a 'BVar' given an index ('Fin') into the input environment.  For an
@@ -662,8 +662,8 @@ withInps f = f inpVars
 -- instead, which is geared around that use case.
 implicitly
     :: Known Nat n
-    => BPOpI s n r a
-    -> BPOp s n r a
+    => BPOpI s n m r a
+    -> BPOp s n m r a
 implicitly f = withInps (return . f)
 
 -- | Apply 'OpB' over a 'VecT' of 'BVar's, as inputs. Provides "implicit"

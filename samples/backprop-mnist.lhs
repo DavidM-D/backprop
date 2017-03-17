@@ -221,11 +221,11 @@ to run our network!
 
 > runLayer
 >     :: (KnownNat i, KnownNat o)
->     => BPOp s '[ R i, Layer i o ] (R o)
+>     => BPOp s '[ R i, Layer i o ] '[ R o ]
 > runLayer = withInps $ \(x :< l :< Ø) -> do
 >     w :< b :< Ø <- gTuple #<~ l
 >     y <- matVec ~$ (w :< x :< Ø)
->     return $ y + b
+>     return . only $ y + b
 
 A `BPOp s '[ R i, Layer i o ] (R o)` is a backpropagatable function that
 produces an `R o` (a vector with `o` elements, from the *[hmatrix][]*
@@ -249,19 +249,21 @@ We can write the `runNetwork` function pretty much the same way.
 
 > runNetwork
 >     :: (KnownNat i, KnownNat h1, KnownNat h2, KnownNat o)
->     => BPOp s '[ R i, Network i h1 h2 o ] (R o)
+>     => BPOp s '[ R i, Network i h1 h2 o ] '[ R o ]
 > runNetwork = withInps $ \(x :< n :< Ø) -> do
 >     l1 :< l2 :< l3 :< Ø <- gTuple #<~ n
 >     y <- runLayer -$ (x          :< l1 :< Ø)
 >     z <- runLayer -$ (logistic y :< l2 :< Ø)
 >     r <- runLayer -$ (logistic z :< l3 :< Ø)
->     softmax       -$ (r          :< Ø)
+>     o <- softmax  -$ (r          :< Ø)
+>     return $ only o
 >   where
->     softmax :: KnownNat n => BPOp s '[ R n ] (R n)
+>     softmax :: KnownNat n => BPOp s '[ R n ] '[ R n ]
 >     softmax = withInps $ \(x :< Ø) -> do
 >         expX <- bindVar (exp x)
->         totX <- vsum ~$ (expX   :< Ø)
->         scale        ~$ (1/totX :< expX :< Ø)
+>         totX <- vsum  ~$ (expX   :< Ø)
+>         sm   <- scale ~$ (1/totX :< expX :< Ø)
+>         return $ only sm
 
 
 After splitting out the layers in the input `Network`, we run each layer
@@ -285,7 +287,7 @@ get the output:
 >     => Network i h1 h2 o
 >     -> R i
 >     -> R o
-> runNetOnInp n x = evalBPOp runNetwork (x ::< n ::< Ø)
+> runNetOnInp n x = getI . head' $ evalBPOp runNetwork (x ::< n ::< Ø)
 
 But, the magic part is that we can also get the gradient!
 
@@ -313,8 +315,8 @@ classification problems.
 > crossEntropy
 >     :: KnownNat n
 >     => R n
->     -> BPOpI s '[ R n ] Double
-> crossEntropy targ (r :< Ø) = negate (dot .$ (log r :< t :< Ø))
+>     -> BPOpI s '[ R n ] '[ Double ]
+> crossEntropy targ (r :< Ø) = only $ negate (dot .$ (log r :< t :< Ø))
 >   where
 >     t = constVar targ
 
@@ -342,10 +344,11 @@ and a target, using `gradBPOp`:
 >     _ ::< gN ::< Ø ->
 >         n - (realToFrac r * gN)
 >   where
->     o :: BPOp s '[ R i, Network i h1 h2 o ] Double
+>     o :: BPOp s '[ R i, Network i h1 h2 o ] '[ Double ]
 >     o = do
->       y <- runNetwork
->       implicitly (crossEntropy t) -$ (y :< Ø)
+>       y :< Ø <- runNetwork
+>       z <- implicitly (crossEntropy t) -$ (y :< Ø)
+>       return $ only z
 
 A convenient wrapper for training over all of the observations in a list:
 
@@ -376,7 +379,7 @@ of correct guesses: (mostly using *hmatrix* stuff)
 >         | otherwise                                = 0
 >       where
 >         r :: R o
->         r = evalBPOp runNetwork (x ::< n ::< Ø)
+>         r = getI . head' $ evalBPOp runNetwork (x ::< n ::< Ø)
 
 And now, a main loop!
 

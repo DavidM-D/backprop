@@ -115,7 +115,7 @@ import qualified Numeric.Backprop          as BP
 --
 -- 'BPOp' here is related to 'Numeric.Backprop.BPOpI' from the normal
 -- explicit-graph backprop module "Numeric.Backprop".
-type BPOp rs a = forall s. Prod (BVar s rs) rs -> BVar s rs a
+type BPOp rs as = forall s. Prod (BVar s rs) rs -> Prod (BVar s rs) as
 
 -- | Run back-propagation on a 'BPOp' function, getting both the result and
 -- the gradient of the result with respect to the inputs.
@@ -131,9 +131,9 @@ type BPOp rs a = forall s. Prod (BVar s rs) rs -> BVar s rs a
 -- (11.46, 13.73 ::< 6.12 ::< Ø)
 backprop
     :: Every Num rs
-    => BPOp rs a
+    => BPOp rs as
     -> Tuple rs
-    -> (a, Tuple rs)
+    -> (Tuple as, Tuple rs)
 backprop f xs = BP.backprop (BP.withInps' (prodLength xs) (return . f)) xs
 
 -- | Run the 'BPOp' on an input tuple and return the gradient of the result
@@ -168,10 +168,10 @@ grad f = snd . backprop f
 -- >>> eval foo (2 ::< 3 ::< Ø)
 -- 11.46
 eval
-    :: (Known Length rs, Num a)
-    => BPOp rs a
+    :: (Known Length rs, Every Num as)
+    => BPOp rs as
     -> Tuple rs
-    -> a
+    -> Tuple as
 eval f = BP.evalBPOp $ BP.implicitly f
 
 -- | A version of 'partsVar' taking explicit 'Length', indicating the

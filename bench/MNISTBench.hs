@@ -91,45 +91,37 @@ logistic x = 1 / (1 + exp (-x))
 
 runLayer
     :: (KnownNat i, KnownNat o)
-    => BPOp s '[ R i, Layer i o ] (R o)
+    => BPOp s '[ R i, Layer i o ] '[ R o ]
 runLayer = withInps $ \(x :< l :< Ø) -> do
     w :< b :< Ø <- gTuple #<~ l
     y <- matVec ~$ (w :< x :< Ø)
-    return $ y + b
+    return . only $ y + b
 
 runNetwork
     :: (KnownNat i, KnownNat h1, KnownNat h2, KnownNat o)
-    => BPOp s '[ R i, Network i h1 h2 o ] (R o)
+    => BPOp s '[ R i, Network i h1 h2 o ] '[ R o ]
 runNetwork = withInps $ \(x :< n :< Ø) -> do
     l1 :< l2 :< l3 :< Ø <- gTuple #<~ n
     y <- runLayer -$ (x          :< l1 :< Ø)
     z <- runLayer -$ (logistic y :< l2 :< Ø)
     r <- runLayer -$ (logistic z :< l3 :< Ø)
-    softmax       -$ (r          :< Ø)
+    o <- softmax  -$ (r          :< Ø)
+    return $ only o
 
-softmax :: KnownNat n => BPOp s '[ R n ] (R n)
+softmax :: KnownNat n => BPOp s '[ R n ] '[ R n ]
 softmax = withInps $ \(x :< Ø) -> do
     expX <- bindVar (exp x)
-    totX <- vsum ~$ (expX   :< Ø)
-    scale        ~$ (1/totX :< expX :< Ø)
+    totX <- vsum  ~$ (expX   :< Ø)
+    sm   <- scale ~$ (1/totX :< expX :< Ø)
+    return $ only sm
 
 crossEntropy
     :: KnownNat n
     => R n
-    -> BPOpI s '[ R n ] Double
-crossEntropy targ (r :< Ø) = negate (dot .$ (log r :< t :< Ø))
+    -> BPOpI s '[ R n ] '[ Double ]
+crossEntropy targ (r :< Ø) = only $ negate (dot .$ (log r :< t :< Ø))
   where
     t = constVar targ
-
-softMaxCrossEntropy
-    :: KnownNat n
-    => R n
-    -> BPOpI s '[ R n ] Double
-softMaxCrossEntropy targ (r :< Ø) =  realToFrac tsum * log (vsum .$ (r :< Ø))
-                                       - (dot .$ (r :< t :< Ø))
-  where
-    tsum = HM.sumElements . extract $ targ
-    t    = constVar targ
 
 trainStep
     :: forall i h1 h2 o. (KnownNat i, KnownNat h1, KnownNat h2, KnownNat o)
@@ -215,10 +207,11 @@ trainStepManual r !x !t !n =
 netErr
     :: (KnownNat i, KnownNat h1, KnownNat h2, KnownNat o)
     => R o
-    -> BPOp s '[ R i, Network i h1 h2 o ] Double
+    -> BPOp s '[ R i, Network i h1 h2 o ] '[ Double ]
 netErr t = do
-    y <- runNetwork
-    implicitly (crossEntropy t) -$ (y :< Ø)
+    y :< Ø <- runNetwork
+    z <- implicitly (crossEntropy t) -$ (y :< Ø)
+    return $ only z
 
 main :: IO ()
 main = MWC.withSystemRandom $ \g -> do
@@ -231,7 +224,7 @@ main = MWC.withSystemRandom $ \g -> do
         tstr    = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" t
     defaultMainWith defaultConfig
           { reportFile = Just $ "bench-results/mnist-bench_" ++ tstr ++ ".html"
-          , timeLimit  = 10
+          , timeLimit  = 20
           } [
         bgroup "gradient" [
             let testManual x y = gradNetManual x y net0
@@ -249,7 +242,7 @@ main = MWC.withSystemRandom $ \g -> do
       , bgroup "run" [
             let testManual x   = runNetManual net0 x
             in  bench "manual" $ nf testManual (fst test0)
-          , let testBP     x   = evalBPOp runNetwork (x ::< net0 ::< Ø)
+          , let testBP     x   = getI . head' $ evalBPOp runNetwork (x ::< net0 ::< Ø)
             in  bench "bp"     $ nf testBP (fst test0)
           ]
       ]

@@ -25,7 +25,7 @@ docs][docs].
 > {-# LANGUAGE ViewPatterns                  #-}
 > {-# OPTIONS_GHC -fno-warn-orphans          #-}
 > {-# OPTIONS_GHC -fno-warn-unused-top-binds #-}
-> 
+>
 > import           Data.Functor
 > import           Data.Kind
 > import           Data.Maybe
@@ -90,10 +90,10 @@ neural network:
 > simpleOp
 >       :: (KnownNat m, KnownNat n, KnownNat o)
 >       => R m
->       -> BPOpI s '[ L n m, R n, L o n, R o ] (R o)
+>       -> BPOpI s '[ L n m, R n, L o n, R o ] '[ R o ]
 > simpleOp inp = \(w1 :< b1 :< w2 :< b2 :< Ø) ->
 >     let z = logistic $ liftB2 matVec w1 x + b1
->     in  logistic $ liftB2 matVec w2 z + b2
+>     in  only . logistic $ liftB2 matVec w2 z + b2
 >   where
 >     x = constVar inp
 
@@ -106,7 +106,7 @@ calculate the output of the neural net.
 >     :: (KnownNat m, KnownNat n, KnownNat o)
 >     => R m
 >     -> Tuple '[ L n m, R n, L o n, R o ]
->     -> R o
+>     -> Tuple '[ R o ]
 > runSimple inp = evalBPOp (implicitly $ simpleOp inp)
 
 Alternatively, we can define `simpleOp` in explicit monadic style, were we
@@ -115,14 +115,14 @@ specify our graph nodes explicitly.  The results should be the same.
 > simpleOpExplicit
 >       :: (KnownNat m, KnownNat n, KnownNat o)
 >       => R m
->       -> BPOp s '[ L n m, R n, L o n, R o ] (R o)
+>       -> BPOp s '[ L n m, R n, L o n, R o ] '[ R o ]
 > simpleOpExplicit inp = withInps $ \(w1 :< b1 :< w2 :< b2 :< Ø) -> do
 >     -- First layer
 >     y1  <- matVec ~$ (w1 :< x1 :< Ø)
 >     let x2 = logistic (y1 + b1)
 >     -- Second layer
 >     y2  <- matVec ~$ (w2 :< x2 :< Ø)
->     return $ logistic (y2 + b2)
+>     return . only $ logistic (y2 + b2)
 >   where
 >     x1 = constVar inp
 
@@ -137,12 +137,13 @@ the implicit (or explicit) graph and use it to do back-propagation, too!
 >     -> Tuple '[ L n m, R n, L o n, R o ]
 > simpleGrad inp targ params = gradBPOp opError params
 >   where
->     opError :: BPOp s '[ L n m, R n, L o n, R o ] Double
+>     opError :: BPOp s '[ L n m, R n, L o n, R o ] '[ Double ]
 >     opError = do
->         res <- implicitly $ simpleOp inp
+>         res :< Ø <- implicitly $ simpleOp inp
 >         -- we explicitly bind err to prevent recomputation
 >         err <- bindVar $ res - t
->         dot ~$ (err :< err :< Ø)
+>         out <- dot ~$ (err :< err :< Ø)
+>         return $ only out
 >       where
 >         t = constVar targ
 
@@ -164,7 +165,7 @@ recursive `Network` type that lets us chain multiple layers.
 >              }
 >           -> Layer n m
 >       deriving (Show, Generic)
-> 
+>
 >
 > data Network :: Nat -> [Nat] -> Nat -> Type where
 >     NØ   :: !(Layer a b) -> Network a '[] b
@@ -193,7 +194,7 @@ constructors:
 > netExternal :: Iso' (Network a '[] b) (Tuple '[Layer a b])
 > netExternal = iso (\case NØ x     -> x ::< Ø)
 >                   (\case I x :< Ø -> NØ x   )
-> 
+>
 > netInternal :: Iso' (Network a (b ': bs) c) (Tuple '[Layer a b, Network b bs c])
 > netInternal = iso (\case x :& xs          -> x ::< xs ::< Ø)
 >                   (\case I x :< I xs :< Ø -> x :& xs       )
@@ -212,33 +213,35 @@ different network constructors differently.
 > netOp
 >     :: forall s a bs c. (KnownNat a, KnownNat c)
 >     => Sing bs
->     -> BPOp s '[ R a, Network a bs c ] (R c)
+>     -> BPOp s '[ R a, Network a bs c ] '[ R c ]
 > netOp sbs = go sbs
 >   where
 >     go :: forall d es. KnownNat d
 >         => Sing es
->         -> BPOp s '[ R d, Network d es c ] (R c)
+>         -> BPOp s '[ R d, Network d es c ] '[ R c ]
 >     go = \case
 >       SNil -> withInps $ \(x :< n :< Ø) -> do
 >         -- peek into the NØ using netExternal iso
 >         l :< Ø <- netExternal #<~ n
 >         -- run the 'layerOp' BP, with x and l as inputs
->         bpOp layerOp ~$ (x :< l :< Ø)
+>         z <- bpOp layerOp ~$ (x :< l :< Ø)
+>         return $ only z
 >       SNat `SCons` ses -> withInps $ \(x :< n :< Ø) -> withSingI ses $ do
 >         -- peek into the (:&) using the netInternal iso
 >         l :< n' :< Ø <- netInternal #<~ n
 >         -- run the 'layerOp' BP, with x and l as inputs
 >         z <- bpOp layerOp  ~$ (x :< l :< Ø)
 >         -- run the 'go ses' BP, with z and n as inputs
->         bpOp (go ses)      ~$ (z :< n' :< Ø)
+>         o <- bpOp (go ses)      ~$ (z :< n' :< Ø)
+>         return $ only o
 >     layerOp
 >         :: forall d e. (KnownNat d, KnownNat e)
->         => BPOp s '[ R d, Layer d e ] (R e)
+>         => BPOp s '[ R d, Layer d e ] '[ R e ]
 >     layerOp = withInps $ \(x :< l :< Ø) -> do
 >         -- peek into the layer using the gTuple iso, auto-generated with SOP.Generic
 >         w :< b :< Ø <- gTuple #<~ l
 >         y           <- matVec  ~$ (w :< x :< Ø)
->         return $ logistic (y + b)
+>         return . only $ logistic (y + b)
 
 There's some singletons work going on here, but it's fairly standard
 singletons stuff.  Most of the complexity here is from the static typing in
@@ -261,10 +264,11 @@ Now we can do simple gradient descent.  Defining an error function:
 >     :: KnownNat m
 >     => R m
 >     -> BVar s rs (R m)
->     -> BPOp s rs Double
+>     -> BPOp s rs '[ Double ]
 > errOp targ r = do
 >     err <- bindVar $ r - t
->     dot ~$ (err :< err :< Ø)
+>     out <- dot ~$ (err :< err :< Ø)
+>     return $ only out
 >   where
 >     t = constVar targ
 
@@ -279,7 +283,7 @@ has a `Num` instance, so we can use `(-)` and `(*)` etc.
 >     -> R c
 >     -> Network a bs c
 >     -> Network a bs c
-> train r x t n = case backprop (errOp t =<< netOp sing) (x ::< n ::< Ø) of
+> train r x t n = case backprop (errOp t . head' =<< netOp sing) (x ::< n ::< Ø) of
 >     (_, _ :< I g :< Ø) -> n - (realToFrac r * g)
 
 (`(::<)` is cons and `Ø` is nil for tuples.)
@@ -305,15 +309,15 @@ And now for some typeclass instances and boilerplates unrelated to the
 > instance KnownNat n => Variate (R n) where
 >     uniform g = randomVector <$> uniform g <*> pure Uniform
 >     uniformR (l, h) g = (\x -> x * (h - l) + l) <$> uniform g
-> 
+>
 > instance (KnownNat m, KnownNat n) => Variate (L m n) where
 >     uniform g = uniformSample <$> uniform g <*> pure 0 <*> pure 1
 >     uniformR (l, h) g = (\x -> x * (h - l) + l) <$> uniform g
-> 
+>
 > instance (KnownNat n, KnownNat m) => Variate (Layer n m) where
 >     uniform g = subtract 1 . (* 2) <$> (Layer <$> uniform g <*> uniform g)
 >     uniformR (l, h) g = (\x -> x * (h - l) + l) <$> uniform g
-> 
+>
 > instance (KnownNat m, KnownNat n) => Num (Layer n m) where
 >     Layer w1 b1 + Layer w2 b2 = Layer (w1 + w2) (b1 + b2)
 >     Layer w1 b1 - Layer w2 b2 = Layer (w1 - w2) (b1 - b2)
@@ -322,16 +326,16 @@ And now for some typeclass instances and boilerplates unrelated to the
 >     signum (Layer w b) = Layer (signum w) (signum b)
 >     negate (Layer w b) = Layer (negate w) (negate b)
 >     fromInteger x = Layer (fromInteger x) (fromInteger x)
-> 
+>
 > instance (KnownNat m, KnownNat n) => Fractional (Layer n m) where
 >     Layer w1 b1 / Layer w2 b2 = Layer (w1 / w2) (b1 / b2)
 >     recip (Layer w b) = Layer (recip w) (recip b)
 >     fromRational x = Layer (fromRational x) (fromRational x)
-> 
+>
 > instance (KnownNat a, SingI bs, KnownNat c) => Variate (Network a bs c) where
 >     uniform g = genNet sing (uniform g)
 >     uniformR (l, h) g = (\x -> x * (h - l) + l) <$> uniform g
-> 
+>
 > genNet
 >     :: forall f a bs c. (Applicative f, KnownNat a, KnownNat c)
 >     => Sing bs
@@ -343,14 +347,14 @@ And now for some typeclass instances and boilerplates unrelated to the
 >     go = \case
 >       SNil             -> NØ <$> f
 >       SNat `SCons` ses -> (:&) <$> f <*> go ses
-> 
+>
 > mapNetwork0
 >     :: forall a bs c. (KnownNat a, KnownNat c)
 >     => Sing bs
 >     -> (forall d e. (KnownNat d, KnownNat e) => Layer d e)
 >     -> Network a bs c
 > mapNetwork0 sbs f = getI $ genNet sbs (I f)
-> 
+>
 > traverseNetwork
 >     :: forall a bs c f. (KnownNat a, KnownNat c, Applicative f)
 >     => Sing bs
@@ -365,7 +369,7 @@ And now for some typeclass instances and boilerplates unrelated to the
 >         NØ x -> NØ <$> f x
 >       SNat `SCons` ses -> \case
 >         x :& xs -> (:&) <$> f x <*> go ses xs
-> 
+>
 > mapNetwork1
 >     :: forall a bs c. (KnownNat a, KnownNat c)
 >     => Sing bs
@@ -373,7 +377,7 @@ And now for some typeclass instances and boilerplates unrelated to the
 >     -> Network a bs c
 >     -> Network a bs c
 > mapNetwork1 sbs f = getI . traverseNetwork sbs (I . f)
-> 
+>
 > mapNetwork2
 >     :: forall a bs c. (KnownNat a, KnownNat c)
 >     => Sing bs
@@ -391,7 +395,7 @@ And now for some typeclass instances and boilerplates unrelated to the
 >       SNat `SCons` ses -> \case
 >         x :& xs -> \case
 >           y :& ys -> f x y :& go ses xs ys
-> 
+>
 > instance (KnownNat a, SingI bs, KnownNat c) => Num (Network a bs c) where
 >     (+)           = mapNetwork2 sing (+)
 >     (-)           = mapNetwork2 sing (-)
@@ -400,7 +404,7 @@ And now for some typeclass instances and boilerplates unrelated to the
 >     abs           = mapNetwork1 sing abs
 >     signum        = mapNetwork1 sing signum
 >     fromInteger x = mapNetwork0 sing (fromInteger x)
-> 
+>
 > instance (KnownNat a, SingI bs, KnownNat c) => Fractional (Network a bs c) where
 >     (/)            = mapNetwork2 sing (/)
 >     recip          = mapNetwork1 sing recip

@@ -94,7 +94,7 @@ import qualified Numeric.Backprop.Mono        as BP
 --
 -- 'BPOp' here is related to 'Numeric.Backprop.Mono.BPOpI' from the normal
 -- explicit-graph backprop module "Numeric.Backprop.Mono".
-type BPOp n a b = forall s. VecT n (BVar s n a) a -> BVar s n a b
+type BPOp n m a b = forall s. VecT n (BVar s n a) a -> VecT m (BVar s n a) b
 
 -- | Run back-propagation on a 'BPOp' function, getting both the result and
 -- the gradient of the result with respect to the inputs.
@@ -109,10 +109,10 @@ type BPOp n a b = forall s. VecT n (BVar s n a) a -> BVar s n a b
 -- >>> backprop foo (2 :+ 3 :+ ØV)
 -- (11.46, 13.73 :+ 6.12 :+ ØV)
 backprop
-    :: forall n a b. (Num a, Known Nat n)
-    => BPOp n a b
+    :: forall n m a b. (Num a, Known Nat n, Known Nat m)
+    => BPOp n m a b
     -> Vec n a
-    -> (b, Vec n a)
+    -> (Vec m b, Vec n a)
 backprop f = BP.backprop $ BP.withInps (return . f)
 
 -- | Run the 'BPOp' on an input tuple and return the gradient of the result
@@ -128,8 +128,8 @@ backprop f = BP.backprop $ BP.withInps (return . f)
 -- >>> grad foo (2 :+ 3 :+ ØV)
 -- 13.73 :+ 6.12 :+ ØV
 grad
-    :: forall n a b. (Num a, Known Nat n)
-    => BPOp n a b
+    :: forall n m a b. (Num a, Known Nat n, Known Nat m)
+    => BPOp n m a b
     -> Vec n a
     -> Vec n a
 grad f = snd . backprop f
@@ -147,9 +147,9 @@ grad f = snd . backprop f
 -- >>> eval foo (2 :+ 3 :+ ØV)
 -- 11.46
 eval
-    :: forall n a b. (Num a, Known Nat n)
-    => BPOp n a b
+    :: forall n m a b. (Num a, Known Nat n, Known Nat m)
+    => BPOp n m a b
     -> Vec n a
-    -> b
+    -> Vec m b
 eval f = fst . backprop f
 

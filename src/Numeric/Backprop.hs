@@ -107,11 +107,9 @@ import           Control.Monad.Base
 import           Control.Monad.Reader
 import           Control.Monad.ST
 import           Control.Monad.State
-import           Data.Bifunctor
 import           Data.Kind
 import           Data.Maybe
 import           Data.Monoid               ((<>))
-import           Data.Profunctor
 import           Data.STRef
 import           Data.Type.Combinator
 import           Data.Type.Conjunction
@@ -236,7 +234,7 @@ import qualified Generics.SOP              as SOP
 --
 -- See documentation for 'BP' for an explanation of the phantom type
 -- parameter @s@.
-type BPOp s rs a  = BP s rs (BVar s rs a)
+type BPOp s rs as  = BP s rs (Prod (BVar s rs) as)
 
 -- | An "implicit" operation on 'BVar's that can be backpropagated.
 -- A value of type:
@@ -259,7 +257,7 @@ type BPOp s rs a  = BP s rs (BVar s rs a)
 -- synonym exists in "Numeric.Backprop" just for the 'implicitly' function,
 -- which can convert "implicit" backprop functions like a @'BPOpI' s rs a@
 -- into an "explicit" graph backprop function, a @'BPOp' s rs a@.
-type BPOpI s rs a = Prod (BVar s rs) rs -> BVar s rs a
+type BPOpI s rs as = Prod (BVar s rs) rs -> Prod (BVar s rs) as
 
 
 -- | Apply an 'OpB' to a 'Prod' (tupling) of 'BVar's.
@@ -857,9 +855,9 @@ infixr 5 ~$
 infixr 5 -$
 (-$)
     :: (Every Num as, Known Length as, Num a)
-    => BPOp s as a
+    => BPOp s as '[a]
     -> Prod (BVar s rs) as
-    -> BPOp s rs a
+    -> BP s rs (BVar s rs a)
 o -$ xs = bpOp o ~$ xs
 
 -- | Create a 'BVar' that represents just a specific value, that doesn't
@@ -1025,12 +1023,12 @@ backwardPass = \case
 -- package documentation for examples and usages.
 backprop
     :: Every Num rs
-    => (forall s. BPOp s rs a)
+    => (forall s. BPOp s rs as)
     -> Tuple rs
-    -> (a, Tuple rs)
+    -> (Tuple as, Tuple rs)
 backprop bp env = runST $ do
     (res, gFunc) <- backpropWith bp env
-    grad <- gFunc Nothing
+    grad <- gFunc (map1 (const Nothing) res)
     return (res, grad)
 
 -- | Turn a 'BPOp' into an 'OpB'.  Basically converts a 'BP' taking an @rs@
@@ -1045,21 +1043,20 @@ backprop bp env = runST $ do
 -- the 'Op'-related functions in this moduel, including 'opVar', '~$', etc.
 bpOp
     :: Every Num rs
-    => BPOp s rs a
-    -> OpB s rs '[a]
-bpOp bp = OpM $ fmap (bimap only_ (lmap head'))
-              . backpropWith bp
+    => BPOp s rs as
+    -> OpB s rs as
+bpOp bp = OpM $ backpropWith bp
 
 -- | Simply run the 'BPOp' on an input tuple, getting the result without
 -- bothering with the gradient or with back-propagation.
 evalBPOp
-    :: (forall s. BPOp s rs a)  -- ^ 'BPOp' to run
+    :: (forall s. BPOp s rs as) -- ^ 'BPOp' to run
     -> Tuple rs                 -- ^ input
-    -> a                        -- ^ output
+    -> Tuple as                 -- ^ output
 evalBPOp bp env = runST $ do
     r <- evalStateT (runReaderT (bpST bp) env)
                     (BPS (map1 (\_ -> FRInternal []) env))
-    runReaderT (resolveVar r) env
+    runReaderT (traverse1 (fmap I . resolveVar) r) env
 
 -- | Run the 'BPOp' on an input tuple and return the gradient of the result
 -- with respect to the input tuple.
@@ -1092,15 +1089,18 @@ closeOff isTerminal gOut = \case
 -- | WARNING: the gradient continuation must only be run ONCE!
 backpropWith
     :: Every Num rs
-    => BPOp s rs a
+    => BPOp s rs as
     -> Tuple rs
-    -> ST s (a, Maybe a -> ST s (Tuple rs))
+    -> ST s (Tuple as, Prod Maybe as -> ST s (Tuple rs))
 backpropWith bp env = do
     (r, bps0) <- runStateT (runReaderT (bpST bp) env)
                            (BPS (map1 (\_ -> FRInternal []) env))
-    res <- runReaderT (resolveVar r) env
+    res <- runReaderT (traverse1 (fmap I . resolveVar) r) env
     let gradFunc gradOut = do
-          BPS{..} <- execStateT (runReaderT (closeOff True gradOut r) env) bps0
+          -- BPS{..} <- execStateT (runReaderT (closeOff True gradOut r) env) bps0
+          BPS{..} <- flip execStateT bps0 . flip runReaderT env $ do
+            for1_ (gradOut `zipP` r) $ \(g :&: v) ->
+              closeOff True g v
           ifor1 _bpsSources $ \ix rs -> every @_ @Num ix // do
             I <$> case rs of
               FRInternal rs' -> sum <$> traverse backwardPass rs'
@@ -1115,11 +1115,11 @@ backpropWith bp env = do
 -- the list of inputs.  If you ever actually explicitly write down @rs@ as
 -- a list of types, you should be able to just use 'implicitly'.
 implicitly'
-    :: Num a
+    :: Every Num as
     => Length rs
-    -> BPOpI s rs a
-    -> BPOp s rs a
-implicitly' l f = withInps' l (bindVar . f)
+    -> BPOpI s rs as
+    -> BPOp s rs as
+implicitly' l f = withInps' l (itraverse1 (\ix -> bindVar \\ every @_ @Num ix) . f)
 
 -- | Convert a 'BPOpI' into a 'BPOp'.  That is, convert a function on
 -- a bundle of 'BVar's (generating an implicit graph) into a fully fledged
@@ -1130,9 +1130,9 @@ implicitly' l f = withInps' l (bindVar . f)
 -- it might be more convenient to use "Numeric.Backprop.Implicit" instead,
 -- which is geared around that use case.
 implicitly
-    :: (Known Length rs, Num a)
-    => BPOpI s rs a
-    -> BPOp s rs a
+    :: (Known Length rs, Every Num as)
+    => BPOpI s rs as
+    -> BPOp s rs as
 implicitly = implicitly' known
 
 -- | Create a 'BVar' given an index into the input environment.  For an
