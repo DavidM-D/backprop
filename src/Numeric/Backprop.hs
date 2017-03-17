@@ -73,6 +73,7 @@ module Numeric.Backprop (
   , opVar, (~$)
   , opVar1, opVar2, opVar3
   , (-$)
+  , opVarMulti, (~$$), (-$$)
   -- ** Var manipulation
   -- *** As parts
   , partsVar, (#<~), withParts
@@ -314,6 +315,40 @@ opVar o i = do
     r <- BP . liftBase $ newSTRef bp
     itraverse1_ (registerVar . flip IRNode r) i
     return (BVNode IZ r)
+
+opVarMulti
+    :: forall s rs as bs. Every Num bs
+    => OpB s as bs
+    -> Prod (BVar s rs) as
+    -> BP s rs (Prod (BVar s rs) bs)
+opVarMulti o i = do
+    xs <- traverse1 (fmap I . BP . resolveVar) i
+    (res, gf) <- BP . liftBase $ runOpM' o xs
+    let bp :: BPNode s rs as bs
+        bp = BPN { _bpnOut       = map1 (\_ -> FRInternal []) res
+                 , _bpnRes       = res
+                 , _bpnGradFunc  = gf
+                 , _bpnGradCache = Nothing
+                 }
+    r <- BP . liftBase $ newSTRef bp
+    itraverse1_ (registerVar . flip IRNode r) i
+    return $ imap1 (\ix _ -> BVNode ix r) res
+
+infixr 5 ~$$
+(~$$)
+    :: Every Num bs
+    => OpB s as bs
+    -> Prod (BVar s rs) as
+    -> BP s rs (Prod (BVar s rs) bs)
+(~$$) = opVarMulti
+
+infixr 5 -$$
+(-$$)
+    :: (Every Num as, Known Length as, Every Num bs)
+    => BPOp s as bs
+    -> Prod (BVar s rs) as
+    -> BP s rs (Prod (BVar s rs) bs)
+o -$$ xs = bpOp o ~$$ xs
 
 -- | Split out a 'BVar' of a tuple into a tuple ('Prod') of 'BVar's.
 --

@@ -88,6 +88,7 @@ module Numeric.Backprop.Mono (
   , opVar, (~$)
   , opVar1, opVar2, opVar3
   , (-$)
+  , opVarMulti, (~$$), (-$$)
   -- ** Combining
   , liftB, (.$), liftB1, liftB2, liftB3
   -- * Op
@@ -388,7 +389,34 @@ infixr 5 -$
     => BPOp s m N1 a b
     -> VecT m (BVar s n r) a
     -> BP s n r (BVar s n r b)
-o -$ xs = opVar @_ @_ @_ @r (bpOp @_ @_ @a @b o) xs
+o -$ xs = opVar @_ @_ @_ @r (bpOp @_ @_ @_ @a o) xs
+
+opVarMulti
+    :: forall s m n o r a b. (Num b, Known Nat n)
+    => OpB s m n a b
+    -> VecT m (BVar s o r) a
+    -> BP s o r (VecT n (BVar s o r) b)
+opVarMulti o xs = (fmap (prodToVec' n) . BP.opVarMulti o . vecToProd $ xs)
+        \\ replWit n (Wit @(Num b))
+  where
+    n :: Nat n
+    n = known
+
+infixr 5 ~$$
+(~$$)
+    :: forall s m n o r a b. (Num b, Known Nat n)
+    => OpB s m n a b
+    -> VecT m (BVar s o r) a
+    -> BP s o r (VecT n (BVar s o r) b)
+(~$$) = opVarMulti @_ @_ @_ @_ @r
+
+infixr 5 -$$
+(-$$)
+    :: forall s m n o r a b. (Num b, Known Nat n, Num a, Known Nat m)
+    => BPOp s m n a b
+    -> VecT m (BVar s o r) a
+    -> BP s o r (VecT n (BVar s o r) b)
+o -$$ xs = opVarMulti @_ @_ @_ @_ @r (bpOp @_ @_ @_ @a o) xs
 
 -- | Create a 'BVar' that represents just a specific value, that doesn't
 -- depend on any other 'BVar's.
@@ -574,9 +602,9 @@ bpOp' n b = BP.bpOp (vecToProd <$> b)
 -- Handy because an 'OpB' can be used with almost all of
 -- the 'Op'-related functions in this moduel, including 'opVar', '~$', etc.
 bpOp
-    :: forall s n r a. (Num r, Known Nat n)
-    => BPOp s n N1 r a
-    -> OpB s n N1 r a
+    :: forall s n m r a. (Num r, Known Nat n)
+    => BPOp s n m r a
+    -> OpB s n m r a
 bpOp = bpOp' @_ @_ @_ @r known
 
 
