@@ -50,7 +50,7 @@ module Numeric.Backprop.Op (
   -- * Manipulation
   , composeOp, (~.)
   -- * Creation
-  , op0, opConst
+  , op0, opConst, idOp
   , opConst'
   -- ** Automatic creation using the /ad/ library
   , op1, op2, op3, opN
@@ -424,6 +424,15 @@ gradOpM o i = do
 -- @
 opCoerce :: Num a => Coercible a b => Op '[a] '[b]
 opCoerce = opIso coerced
+
+-- | An 'Op' that just returns whatever it receives.  The identity
+-- function.
+--
+-- @
+-- 'idOp' = 'opIso' 'id'
+-- @
+idOp :: Every Num as => Op as as
+idOp = Op $ \xs -> (xs, imap1 (\ix -> maybe (I 1) I \\ every @_ @Num ix))
 
 -- | An 'Op' that runs the input value through the isomorphism encoded in
 -- the 'Iso'.  Requires the input to be an instance of 'Num'.
