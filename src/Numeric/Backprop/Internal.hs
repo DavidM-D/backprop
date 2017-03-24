@@ -29,6 +29,7 @@
 
 module Numeric.Backprop.Internal
   ( OpB
+  , runOpB, gradOpB, gradOpB'
   , BPState(..), bpsSources
   , BP(..)
   , BPInpRef(..)
@@ -44,10 +45,12 @@ import           Control.Monad.State
 import           Data.Kind
 import           Data.STRef
 import           Data.Type.Index
+import           Data.Type.Length
 import           Data.Type.Product
 import           Lens.Micro hiding    (ix)
 import           Lens.Micro.TH
 import           Numeric.Backprop.Op
+import           Type.Class.Known
 
 -- | A subclass of 'OpM' (and superclass of 'Op'), representing 'Op's that
 -- the /backprop/ library uses to perform backpropation.
@@ -70,6 +73,40 @@ import           Numeric.Backprop.Op
 -- You can think of 'OpB' as a superclass/parent class of 'Op' in this
 -- sense, and of 'Op' as a subclass of 'OpB'.
 type OpB s = OpM (ST s)
+
+-- | A version of 'runOp' for 'OpB': runs the function that an 'OpB'
+-- encodes, returning the result.
+--
+-- >>> runOpB (op2 (*)) (3 ::< 5 ::< Ø)
+-- 15
+runOpB :: (forall s. OpB s as bs) -> Tuple as -> Tuple bs
+runOpB o xs = runST $ runOpM o xs
+
+-- | A version of 'gradOp' for 'OpB': runs the function that an 'OpB'
+-- encodes, getting the gradient of the output with respect to the inputs.
+--
+-- >>> gradOpB (op2 (*)) (3 ::< 5 ::< Ø)
+-- 5 ::< 3 ::< Ø
+-- -- the gradient of x*y is (y, x)
+gradOpB
+    :: Known Length bs
+    => (forall s. OpB s as bs)
+    -> Tuple as
+    -> Tuple as
+gradOpB o xs = runST $ gradOpM o xs
+
+-- | A version of 'gradOp'' for 'OpB': runs the function that an 'OpB'
+-- encodes, getting the result along with the gradient of the output with
+-- respect to the inputs.
+--
+-- >>> gradOpB' (op2 (*)) (3 ::< 5 ::< Ø)
+-- (15, 5 ::< 3 ::< Ø)
+gradOpB'
+    :: Known Length bs
+    => (forall s. OpB s as bs)
+    -> Tuple as
+    -> (Tuple bs, Tuple as)
+gradOpB' o xs = runST $ gradOpM' o xs
 
 -- | Reference to /usage sites/ for a given entity, used to get partial or
 -- total derivatives.

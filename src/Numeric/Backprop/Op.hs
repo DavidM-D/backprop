@@ -326,7 +326,7 @@ runOp o = fst . runOp' o
 -- | Run the function that an 'Op' encodes, to get the resulting output and
 -- also its gradient with respect to the inputs.
 --
--- >>> gradOpM' (op2 (*)) (3 ::< 5 ::< Ø) :: IO (Int, Tuple '[Int, Int])
+-- >>> gradOp' (op2 (*)) (3 ::< 5 ::< Ø)
 -- (15, 5 ::< 3 ::< Ø)
 gradOp' :: Known Length bs => Op as bs -> Tuple as -> (Tuple bs, Tuple as)
 gradOp' o = second ($ lengthProd Nothing known) . runOp' o
