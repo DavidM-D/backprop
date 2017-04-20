@@ -76,7 +76,7 @@ type OpB s = OpM (ST s)
 
 -- | Convenience wrapper over a @forall s. 'OpB' s as a@, to work around
 -- lack of impredicative types in GHC
-newtype OpBS as a = OpBS { runOpBS :: forall s. OpB s as a }
+newtype OpBS as bs = OpBS { runOpBS :: forall s. OpB s as bs }
 
 -- | A version of 'runOp' for 'OpB': runs the function that an 'OpB'
 -- encodes, returning the result.

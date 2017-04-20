@@ -296,7 +296,7 @@ type OpB s q r a b   = BP.OpB s (Replicate q a) (Replicate r b)
 
 -- | Convenience wrapper over a @forall s. 'OpB' s n a b@, to work around
 -- lack of impredicative types in GHC
-newtype OpBS n a b = OpBS { runOpBS :: forall s. OpB s n a b }
+newtype OpBS q r a b = OpBS { runOpBS :: forall s. OpB s q r a b }
 
 
 -- | Apply an 'OpB' to a 'VecT' (vector) of 'BVar's.
