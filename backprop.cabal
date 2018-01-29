@@ -35,8 +35,8 @@ library
   exposed-modules:     Numeric.Backprop
                        Numeric.Backprop.Implicit
                        Numeric.Backprop.Iso
-                       Numeric.Backprop.Mono
-                       Numeric.Backprop.Mono.Implicit
+                       -- Numeric.Backprop.Mono
+                       -- Numeric.Backprop.Mono.Implicit
                        Numeric.Backprop.Op
                        Numeric.Backprop.Op.Mono
   other-modules:       Numeric.Backprop.Internal

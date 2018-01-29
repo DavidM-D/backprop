@@ -55,6 +55,7 @@ module Numeric.Backprop (
   -- * Types
   -- ** Backprop types
     BP, BPOp, BPOpI, BVar, Op, OpB, OpBS(..)
+  , Parts(..), Choices(..)
   -- ** Tuple types#prod#
   -- $prod
   , Prod(..), Tuple, I(..)

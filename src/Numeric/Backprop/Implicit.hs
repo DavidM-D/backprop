@@ -61,10 +61,10 @@ module Numeric.Backprop.Implicit (
   -- * Var manipulation
   , BP.constVar, BP.liftB, (BP..$), BP.liftB1, BP.liftB2, BP.liftB3
   -- ** As Parts
-  , partsVar, withParts
-  , splitVars, gSplit, gTuple
-  , partsVar', withParts'
-  , splitVars', gSplit'
+  , partsVar, isoVar1, withIso1
+  , splitVars -- , gSplit, gTuple
+  , partsVar', isoVar1', withIso1'
+  , splitVars' -- , gSplit'
   -- * Op
   , BP.op1, BP.op2, BP.op3, BP.opN
   , BP.op1', BP.op2', BP.op3'
@@ -115,7 +115,7 @@ import qualified Numeric.Backprop          as BP
 --
 -- 'BPOp' here is related to 'Numeric.Backprop.BPOpI' from the normal
 -- explicit-graph backprop module "Numeric.Backprop".
-type BPOp rs as = forall s. Prod (BVar s rs) rs -> Prod (BVar s rs) as
+type BPOp r a = forall s. BVar s r r -> BVar s r a
 
 -- | Run back-propagation on a 'BPOp' function, getting both the result and
 -- the gradient of the result with respect to the inputs.
@@ -129,12 +129,8 @@ type BPOp rs as = forall s. Prod (BVar s rs) rs -> Prod (BVar s rs) as
 --
 -- >>> 'backprop' foo (2 ::< 3 ::< Ø)
 -- (11.46, 13.73 ::< 6.12 ::< Ø)
-backprop
-    :: Every Num rs
-    => BPOp rs as
-    -> Tuple rs
-    -> (Tuple as, Tuple rs)
-backprop f xs = BP.backprop (BP.withInps' (prodLength xs) (return . f)) xs
+backprop :: Num r => BPOp r a -> r -> (a, r)
+backprop f = BP.backprop (BP.withInps (return . f))
 
 -- | Run the 'BPOp' on an input tuple and return the gradient of the result
 -- with respect to the input tuple.
@@ -148,11 +144,7 @@ backprop f xs = BP.backprop (BP.withInps' (prodLength xs) (return . f)) xs
 --
 -- >>> grad foo (2 ::< 3 ::< Ø)
 -- 13.73 ::< 6.12 ::< Ø
-grad
-    :: Every Num rs
-    => BPOp rs a
-    -> Tuple rs
-    -> Tuple rs
+grad :: Num r => BPOp r a -> r -> r
 grad f = snd . backprop f
 
 -- | Simply run the 'BPOp' on an input tuple, getting the result without
@@ -167,27 +159,37 @@ grad f = snd . backprop f
 --
 -- >>> eval foo (2 ::< 3 ::< Ø)
 -- 11.46
-eval
-    :: (Known Length rs, Every Num as)
-    => BPOp rs as
-    -> Tuple rs
-    -> Tuple as
+eval :: Num a => BPOp r a -> r -> a
 eval f = BP.evalBPOp $ BP.implicitly f
 
--- | A version of 'partsVar' taking explicit 'Length', indicating the
+partsVar'
+    :: forall s r bs a. (Every Num bs, BP.Parts bs a)
+    => Length bs
+    -> BVar s r a
+    -> Prod (BVar s r) bs
+partsVar' l = isoVar1' l BP.parts
+
+partsVar
+    :: forall s r bs a. (Every Num bs, BP.Parts bs a, Known Length bs)
+    => BVar s r a
+    -> Prod (BVar s r) bs
+partsVar = partsVar' known
+
+
+-- | A version of 'isoVar1' taking explicit 'Length', indicating the
 -- number of items in the input tuple and their types.
 --
 -- Requiring an explicit 'Length' is mostly useful for rare "extremely
 -- polymorphic" situations, where GHC can't infer the type and length of
 -- the internal tuple.  If you ever actually explicitly write down @bs@ as
--- a list of types, you should be able to just use 'partsVar'.
-partsVar'
-    :: forall s rs bs a. Every Num bs
+-- a list of types, you should be able to just use 'isoVar1'.
+isoVar1'
+    :: forall s r bs a. Every Num bs
     => Length bs
     -> Iso' a (Tuple bs)
-    -> BVar s rs a
-    -> Prod (BVar s rs) bs
-partsVar' l i r = map1 (\ix -> every @_ @Num ix //
+    -> BVar s r a
+    -> Prod (BVar s r) bs
+isoVar1' l i r = map1 (\ix -> every @_ @Num ix //
                                  BP.liftB1 (BP.op1' (fmap (bimap only_ (lmap head')) $ f ix)) r
                        ) ixes
   where
@@ -220,11 +222,11 @@ partsVar' l i r = map1 (\ix -> every @_ @Num ix //
 -- fooIso = 'iso' (\\(F i b)         -\> i ::\< b ::\< Ø)
 --              (\\(i ::\< b ::\< Ø) -\> F i b        )
 --
--- 'partsVar' fooIso :: 'BVar' rs Foo -> 'Prod' ('BVar' s rs) '[Int, Bool]
+-- 'isoVar1' fooIso :: 'BVar' rs Foo -> 'Prod' ('BVar' s rs) '[Int, Bool]
 --
 -- stuff :: 'BPOp' s '[Foo] a
 -- stuff (foo :< Ø) =
---     case 'partsVar' fooIso foo of
+--     case 'isoVar1' fooIso foo of
 --       i :< b :< Ø ->
 --         -- now, i is a 'BVar' pointing to the 'Int' inside foo
 --         -- and b is a 'BVar' pointing to the 'Bool' inside foo
@@ -243,37 +245,37 @@ partsVar' l i r = map1 (\ix -> every @_ @Num ix //
 -- @'BP' s '[Tuple '[Int, Bool]@) then you can give in the identity
 -- isomorphism ('id') or use 'splitVars'.
 --
--- At the moment, this implicit 'partsVar' is less efficient than the
--- explicit 'Numeric.Backprop.partsVar', but this might change in the
+-- At the moment, this implicit 'isoVar1' is less efficient than the
+-- explicit 'Numeric.Backprop.isoVar1', but this might change in the
 -- future.
-partsVar
-    :: forall s rs bs a. (Every Num bs, Known Length bs)
+isoVar1
+    :: forall s r bs a. (Every Num bs, Known Length bs)
     => Iso' a (Tuple bs)
-    -> BVar s rs a
-    -> Prod (BVar s rs) bs
-partsVar = partsVar' known
+    -> BVar s r a
+    -> Prod (BVar s r) bs
+isoVar1 = isoVar1' known
 
--- | A version of 'withParts' taking explicit 'Length', indicating the
+-- | A version of 'withIso1' taking explicit 'Length', indicating the
 -- number of internal items and their types.
 --
 -- Requiring an explicit 'Length' is mostly useful for rare "extremely
 -- polymorphic" situations, where GHC can't infer the type and length of
 -- the internal tuple.  If you ever actually explicitly write down @bs@ as
--- a list of types, you should be able to just use 'withParts'.
-withParts'
-    :: forall s rs bs a r. Every Num bs
+-- a list of types, you should be able to just use 'withIso1'.
+withIso1'
+    :: forall s r bs a t. Every Num bs
     => Length bs
     -> Iso' a (Tuple bs)
-    -> BVar s rs a
-    -> (Prod (BVar s rs) bs -> r)
-    -> r
-withParts' l i r f = f (partsVar' l i r)
+    -> BVar s r a
+    -> (Prod (BVar s r) bs -> t)
+    -> t
+withIso1' l i r f = f (isoVar1' l i r)
 
--- | A continuation-based version of 'partsVar'.  Instead of binding the
+-- | A continuation-based version of 'isoVar1'.  Instead of binding the
 -- parts and using it in the rest of the block, provide a continuation to
 -- handle do stuff with the parts inside.
 --
--- Building on the example from 'partsVar':
+-- Building on the example from 'isoVar1':
 --
 -- @
 -- data Foo = F Int Bool
@@ -283,21 +285,21 @@ withParts' l i r f = f (partsVar' l i r)
 --              (\\(i ::\< b ::\< Ø) -\> F i b        )
 --
 -- stuff :: 'BPOp' s '[Foo] a
--- stuff (foo :< Ø) = 'withParts' fooIso foo $ \\case
+-- stuff (foo :< Ø) = 'withIso1' fooIso foo $ \\case
 --     i :\< b :< Ø -\>
 --       -- now, i is a 'BVar' pointing to the 'Int' inside foo
 --       -- and b is a 'BVar' pointing to the 'Bool' inside foo
 --       -- you can do stuff with the i and b here
 -- @
 --
--- Mostly just a stylistic alternative to 'partsVar'.
-withParts
+-- Mostly just a stylistic alternative to 'isoVar1'.
+withIso1
     :: forall s rs bs a r. (Every Num bs, Known Length bs)
     => Iso' a (Tuple bs)
     -> BVar s rs a
     -> (Prod (BVar s rs) bs -> r)
     -> r
-withParts = withParts' known
+withIso1 = withIso1' known
 
 -- | A version of 'splitVars' taking explicit 'Length', indicating the
 -- number of internal items and their types.
@@ -311,7 +313,7 @@ splitVars'
     => Length as
     -> BVar s rs (Tuple as)
     -> Prod (BVar s rs) as
-splitVars' l = partsVar' l id
+splitVars' l = isoVar1' l id
 
 -- | Split out a 'BVar' of a tuple into a tuple ('Prod') of 'BVar's.
 --
@@ -329,7 +331,7 @@ splitVars' l = partsVar' l id
 -- Note that
 --
 -- @
--- 'splitVars' = 'partsVar' 'id'
+-- 'splitVars' = 'isoVar1' 'id'
 -- @
 splitVars
     :: forall s rs as. (Every Num as, Known Length as)
@@ -337,59 +339,59 @@ splitVars
     -> Prod (BVar s rs) as
 splitVars = splitVars' known
 
--- | A version of 'gSplit' taking explicit 'Length', indicating the
--- number of internal items and their types.
---
--- Requiring an explicit 'Length' is mostly useful for rare "extremely
--- polymorphic" situations, where GHC can't infer the type and length of
--- the internal tuple.  If you ever actually explicitly write down @as@ as
--- a list of types, you should be able to just use 'gSplit'.
-gSplit'
-    :: forall s rs as a. (SOP.Generic a, SOP.Code a ~ '[as], Every Num as)
-    => Length as
-    -> BVar s rs a
-    -> Prod (BVar s rs) as
-gSplit' l = partsVar' l gTuple
+---- | A version of 'gSplit' taking explicit 'Length', indicating the
+---- number of internal items and their types.
+----
+---- Requiring an explicit 'Length' is mostly useful for rare "extremely
+---- polymorphic" situations, where GHC can't infer the type and length of
+---- the internal tuple.  If you ever actually explicitly write down @as@ as
+---- a list of types, you should be able to just use 'gSplit'.
+--gSplit'
+--    :: forall s rs as a. (SOP.Generic a, SOP.Code a ~ '[as], Every Num as)
+--    => Length as
+--    -> BVar s rs a
+--    -> Prod (BVar s rs) as
+--gSplit' l = isoVar1' l gTuple
 
--- | Using 'GHC.Generics.Generic' from "GHC.Generics" and
--- 'Generics.SOP.Generic' from "Generics.SOP", /split/ a 'BVar' containing
--- a product type into a tuple ('Prod') of 'BVar's pointing to each value
--- inside.
---
--- Building on the example from 'partsVar':
---
--- @
--- import qualified Generics.SOP as SOP
---
--- data Foo = F Int Bool
---   deriving Generic
---
--- instance SOP.Generic Foo
---
--- 'gSplit' :: 'BVar' rs Foo -> 'Prod' ('BVar' s rs) '[Int, Bool]
---
--- stuff :: 'BPOp' s '[Foo] a
--- stuff (foo :< Ø) =
---     case 'gSplit' foo of
---       i :< b :< Ø ->
---         -- now, i is a 'BVar' pointing to the 'Int' inside foo
---         -- and b is a 'BVar' pointing to the 'Bool' inside foo
---         -- you can do stuff with the i and b here
--- @
---
--- Because @Foo@ is a straight up product type, 'gSplit' can use
--- "GHC.Generics" and take out the items inside.
---
--- Note that
---
--- @
--- 'gSplit' = 'splitVars' 'gTuple'
--- @
-gSplit
-    :: forall s rs as a. (SOP.Generic a, SOP.Code a ~ '[as], Every Num as, Known Length as)
-    => BVar s rs a
-    -> Prod (BVar s rs) as
-gSplit = gSplit' known
+---- | Using 'GHC.Generics.Generic' from "GHC.Generics" and
+---- 'Generics.SOP.Generic' from "Generics.SOP", /split/ a 'BVar' containing
+---- a product type into a tuple ('Prod') of 'BVar's pointing to each value
+---- inside.
+----
+---- Building on the example from 'isoVar1':
+----
+---- @
+---- import qualified Generics.SOP as SOP
+----
+---- data Foo = F Int Bool
+----   deriving Generic
+----
+---- instance SOP.Generic Foo
+----
+---- 'gSplit' :: 'BVar' rs Foo -> 'Prod' ('BVar' s rs) '[Int, Bool]
+----
+---- stuff :: 'BPOp' s '[Foo] a
+---- stuff (foo :< Ø) =
+----     case 'gSplit' foo of
+----       i :< b :< Ø ->
+----         -- now, i is a 'BVar' pointing to the 'Int' inside foo
+----         -- and b is a 'BVar' pointing to the 'Bool' inside foo
+----         -- you can do stuff with the i and b here
+---- @
+----
+---- Because @Foo@ is a straight up product type, 'gSplit' can use
+---- "GHC.Generics" and take out the items inside.
+----
+---- Note that
+----
+---- @
+---- 'gSplit' = 'splitVars' 'gTuple'
+---- @
+--gSplit
+--    :: forall s rs as a. (SOP.Generic a, SOP.Code a ~ '[as], Every Num as, Known Length as)
+--    => BVar s rs a
+--    -> Prod (BVar s rs) as
+--gSplit = gSplit' known
 
 -- TODO: figure out how to split sums
 -- TODO: refactor these out to not need Known Length
