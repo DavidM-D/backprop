@@ -1,7 +1,6 @@
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE LambdaCase            #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms       #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE RecordWildCards       #-}
@@ -128,10 +127,10 @@ import           Lens.Micro.Mtl hiding     (view)
 import           Numeric.Backprop.Internal
 import           Numeric.Backprop.Iso
 import           Numeric.Backprop.Op
+import           Numeric.Backprop.Parts
 import           Type.Class.Higher
 import           Type.Class.Known
 import           Type.Class.Witness
-import qualified Generics.SOP              as SOP
 
 -- $prod
 --
@@ -264,12 +263,6 @@ type BPOp s r a  = BP s r (BVar s r a)
 -- into an "explicit" graph backprop function, a @'BPOp' s rs a@.
 type BPOpI s r a = BVar s r r -> BVar s r a
 
-
-class Parts bs a where
-    parts :: Iso' a (Tuple bs)
-
-class Choices bss a where
-    choices :: Iso' a (Sum Tuple bss)
 
 -- | Apply an 'OpB' to a 'Prod' (tupling) of 'BVar's.
 --

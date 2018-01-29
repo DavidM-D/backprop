@@ -51,7 +51,7 @@
 module Numeric.Backprop.Implicit (
   -- * Types
   -- ** Backprop types
-    BPOp, BVar, Op, OpB
+    BPOp, BVar, Op, OpB, Parts(..)
   -- ** Tuple types
   -- | See "Numeric.Backprop#prod" for a mini-tutorial on 'Prod' and
   -- 'Tuple'
@@ -93,10 +93,10 @@ import           Lens.Micro.Extras
 import           Numeric.Backprop.Internal
 import           Numeric.Backprop.Iso
 import           Numeric.Backprop.Op
+import           Numeric.Backprop.Parts
 import           Type.Class.Higher
 import           Type.Class.Known
 import           Type.Class.Witness
-import qualified Generics.SOP              as SOP
 import qualified Numeric.Backprop          as BP
 
 -- | An operation on 'BVar's that can be backpropagated. A value of type:
@@ -163,14 +163,14 @@ eval :: Num a => BPOp r a -> r -> a
 eval f = BP.evalBPOp $ BP.implicitly f
 
 partsVar'
-    :: forall s r bs a. (Every Num bs, BP.Parts bs a)
+    :: forall s r bs a. (Every Num bs, Parts bs a)
     => Length bs
     -> BVar s r a
     -> Prod (BVar s r) bs
 partsVar' l = isoVar1' l BP.parts
 
 partsVar
-    :: forall s r bs a. (Every Num bs, BP.Parts bs a, Known Length bs)
+    :: forall s r bs a. (Every Num bs, Parts bs a, Known Length bs)
     => BVar s r a
     -> Prod (BVar s r) bs
 partsVar = partsVar' known
