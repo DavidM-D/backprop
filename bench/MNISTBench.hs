@@ -1,13 +1,15 @@
-{-# LANGUAGE BangPatterns         #-}
-{-# LANGUAGE DataKinds            #-}
-{-# LANGUAGE DeriveGeneric        #-}
-{-# LANGUAGE FlexibleContexts     #-}
-{-# LANGUAGE GADTs                #-}
-{-# LANGUAGE LambdaCase           #-}
-{-# LANGUAGE ScopedTypeVariables  #-}
-{-# LANGUAGE TypeApplications     #-}
-{-# LANGUAGE ViewPatterns         #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE BangPatterns          #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DeriveGeneric         #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeApplications      #-}
+{-# LANGUAGE ViewPatterns          #-}
+{-# OPTIONS_GHC -fno-warn-orphans  #-}
 
 import           Control.DeepSeq
 import           Control.Exception
@@ -22,8 +24,6 @@ import           Data.Time.Format
 import           Data.Time.LocalTime
 import           Data.Traversable
 import           Data.Tuple
-import           Data.Type.Combinator
-import           Data.Type.Index
 import           Data.Type.Product
 import           GHC.Generics                        (Generic)
 import           GHC.TypeLits
@@ -54,6 +54,9 @@ data Network i h1 h2 o =
 
 instance SOP.Generic (Network i h1 h2 o)
 instance NFData (Network i h1 h2 o)
+
+instance Parts '[L o i, R o] (Layer i o)
+instance Parts '[Layer i h1, Layer h1 h2, Layer h2 o] (Network i h1 h2 o)
 
 matVec
     :: (KnownNat m, KnownNat n)
@@ -91,35 +94,33 @@ logistic x = 1 / (1 + exp (-x))
 
 runLayer
     :: (KnownNat i, KnownNat o)
-    => BPOp s '[ R i, Layer i o ] '[ R o ]
-runLayer = withInps $ \(x :< l :< Ø) -> do
-    w :< b :< Ø <- gTuple #<~ l
+    => BPOp s (R i, Layer i o) (R o)
+runLayer = withInpParts $ \(x :< l :< Ø) -> do
+    w :< b :< Ø <- partsVar l
     y <- matVec ~$ (w :< x :< Ø)
-    return . only $ y + b
+    return $ y + b
 
 runNetwork
     :: (KnownNat i, KnownNat h1, KnownNat h2, KnownNat o)
-    => BPOp s '[ R i, Network i h1 h2 o ] '[ R o ]
-runNetwork = withInps $ \(x :< n :< Ø) -> do
-    l1 :< l2 :< l3 :< Ø <- gTuple #<~ n
-    y <- runLayer -$ (x          :< l1 :< Ø)
-    z <- runLayer -$ (logistic y :< l2 :< Ø)
-    r <- runLayer -$ (logistic z :< l3 :< Ø)
-    o <- softmax  -$ (r          :< Ø)
-    return $ only o
+    => BPOp s (R i, Network i h1 h2 o) (R o)
+runNetwork = withInpParts $ \(x :< n :< Ø) -> do
+    l1 :< l2 :< l3 :< Ø <- partsVar n
+    y <- (runLayer -$) =<< unParts (x :< l1 :< Ø)
+    z <- (runLayer -$) =<< unParts (logistic y :< l2 :< Ø)
+    r <- (runLayer -$) =<< unParts (logistic z :< l3 :< Ø)
+    softmax  -$ r
 
-softmax :: KnownNat n => BPOp s '[ R n ] '[ R n ]
-softmax = withInps $ \(x :< Ø) -> do
+softmax :: KnownNat n => BPOp s (R n) (R n)
+softmax = withInp $ \x -> do
     expX <- bindVar (exp x)
     totX <- vsum  ~$ (expX   :< Ø)
-    sm   <- scale ~$ (1/totX :< expX :< Ø)
-    return $ only sm
+    scale ~$ (1/totX :< expX :< Ø)
 
 crossEntropy
     :: KnownNat n
     => R n
-    -> BPOpI s '[ R n ] '[ Double ]
-crossEntropy targ (r :< Ø) = only $ negate (dot .$ (log r :< t :< Ø))
+    -> BPOpI s (R n) Double
+crossEntropy targ r = negate (liftB2 dot (log r) t)
   where
     t = constVar targ
 
@@ -130,9 +131,8 @@ trainStep
     -> R o
     -> Network i h1 h2 o
     -> Network i h1 h2 o
-trainStep r !x !t !n = case gradBPOp (netErr t) (x ::< n ::< Ø) of
-    _ :< I gN :< Ø ->
-        n - (realToFrac r * gN)
+trainStep r !x !t !n = case gradBPOp (netErr t) (x, n) of
+    (_, gN) -> n - (realToFrac r * gN)
 
 runNetManual
     :: forall i h1 h2 o. (KnownNat i, KnownNat h1, KnownNat h2, KnownNat o)
@@ -207,11 +207,10 @@ trainStepManual r !x !t !n =
 netErr
     :: (KnownNat i, KnownNat h1, KnownNat h2, KnownNat o)
     => R o
-    -> BPOp s '[ R i, Network i h1 h2 o ] '[ Double ]
+    -> BPOp s (R i, Network i h1 h2 o) Double
 netErr t = do
-    y :< Ø <- runNetwork
-    z <- implicitly (crossEntropy t) -$ (y :< Ø)
-    return $ only z
+    y <- runNetwork
+    implicitly (crossEntropy t) -$ y
 
 main :: IO ()
 main = MWC.withSystemRandom $ \g -> do
@@ -229,8 +228,7 @@ main = MWC.withSystemRandom $ \g -> do
         bgroup "gradient" [
             let testManual x y = gradNetManual x y net0
             in  bench "manual" $ nf (uncurry testManual) test0
-          , let testBP     x y = getI . index (IS IZ) $
-                  gradBPOp (netErr y) (x ::< net0 ::< Ø)
+          , let testBP     x y = gradBPOp (netErr y) (x, net0)
             in  bench "bp"     $ nf (uncurry testBP) test0
           ]
       , bgroup "descent" [
@@ -242,10 +240,18 @@ main = MWC.withSystemRandom $ \g -> do
       , bgroup "run" [
             let testManual x   = runNetManual net0 x
             in  bench "manual" $ nf testManual (fst test0)
-          , let testBP     x   = getI . head' $ evalBPOp runNetwork (x ::< net0 ::< Ø)
+          , let testBP     x   = evalBPOp runNetwork (x, net0)
             in  bench "bp"     $ nf testBP (fst test0)
           ]
       ]
+
+instance (Num a, Num b) => Num (a, b) where
+    (x1,y1) + (x2,y2) = (x1 + x2, y1 + y2)
+    (x1,y1) * (x2,y2) = (x1 * x2, y1 * y2)
+    (x1,y1) - (x2,y2) = (x1 - x2, y1 - y2)
+    abs (x, y)        = (abs x, abs y)
+    signum (x, y)     = (signum x, signum y)
+    fromInteger x     = (fromInteger x, fromInteger x)
 
 loadMNIST
     :: FilePath

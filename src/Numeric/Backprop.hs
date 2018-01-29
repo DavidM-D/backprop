@@ -63,7 +63,7 @@ module Numeric.Backprop (
   , backprop, evalBPOp, gradBPOp
   , runOpB, gradOpB, gradOpB'
   -- ** Utility combinators
-  , withInps, implicitly
+  , withInp, withInpParts, implicitly
   -- * Vars
   , constVar
   , inpVar
@@ -75,10 +75,9 @@ module Numeric.Backprop (
   , (-$)
   , opVarMulti, (~$$)
   -- ** Var manipulation
-  , isoVar, isoVar1, withIso1
+  , isoVar, isoVar1, isoVar1', withIso1
   -- *** As parts
-  , partsVar, (#<~), withParts
-  , gTuple
+  , partsVar, unParts, (#<~), withParts
   -- *** As sums
   , choicesVar, (?<~), choicesVar1, withChoices1
   -- $sum
@@ -370,7 +369,7 @@ infixr 5 ~$$
 -- 'partsVar' fooIso :: 'BVar' rs Foo -> 'BP' s rs ('Prod' ('BVar' s rs) '[Int, Bool])
 --
 -- stuff :: 'BP' s '[Foo] a
--- stuff = 'withInps' $ \\(foo :< Ø) -\> do
+-- stuff = 'withInp' $ \\(foo :< Ø) -\> do
 --     i :< b :< Ø <- partsVar fooIso foo
 --     -- now, i is a 'BVar' pointing to the 'Int' inside foo
 --     -- and b is a 'BVar' pointing to the 'Bool' inside foo
@@ -389,10 +388,10 @@ infixr 5 ~$$
 -- @'BP' s '[Tuple '[Int, Bool]@) then you can give in the identity
 -- isomorphism ('id') or use 'splitVars'.
 isoVar1
-    :: forall s rs bs b. Every Num bs
+    :: forall s r bs b. Every Num bs
     => Iso' b (Tuple bs)
-    -> BVar s rs b
-    -> BP s rs (Prod (BVar s rs) bs)
+    -> BVar s r b
+    -> BP s r (Prod (BVar s r) bs)
 isoVar1 i = fmap (view sum1) . sopVar (i . resum1)
 
 isoVar
@@ -416,10 +415,23 @@ isoVar i vs = do
     return $ imap1 (\ix _ -> BVNode ix r) ys
 
 partsVar
-    :: forall s rs bs b. (Every Num bs, Parts bs b)
-    => BVar s rs b
-    -> BP s rs (Prod (BVar s rs) bs)
+    :: forall s r bs b. (Every Num bs, Parts bs b)
+    => BVar s r b
+    -> BP s r (Prod (BVar s r) bs)
 partsVar = isoVar1 parts
+
+isoVar1'
+    :: forall s r bs b. (Every Num bs, Num b)
+    => Iso' (Tuple bs) b
+    -> Prod (BVar s r) bs
+    -> BP s r (BVar s r b)
+isoVar1' i = fmap head' . isoVar (i . tup1)
+
+unParts
+    :: forall s r bs b. (Every Num bs, Parts bs b, Num b)
+    => Prod (BVar s r) bs
+    -> BP s r (BVar s r b)
+unParts = isoVar1' (from parts)
 
 -- | A useful infix alias for 'isoVar1'.
 --
@@ -433,7 +445,7 @@ partsVar = isoVar1 parts
 --              (\\(i ::\< b ::\< Ø) -\> F i b        )
 --
 -- stuff :: 'BP' s '[Foo] a
--- stuff = 'withInps' $ \\(foo :< Ø) -\> do
+-- stuff = 'withInp' $ \\(foo :< Ø) -\> do
 --     i :< b :< Ø <- fooIso '#<~' foo
 --     -- now, i is a 'BVar' pointing to the 'Int' inside foo
 --     -- and b is a 'BVar' pointing to the 'Bool' inside foo
@@ -446,8 +458,8 @@ infixr 1 #<~
 (#<~)
     :: (Every Num bs, Known Length bs)
     => Iso' b (Tuple bs)
-    -> BVar s rs b
-    -> BP s rs (Prod (BVar s rs) bs)
+    -> BVar s r b
+    -> BP s r (Prod (BVar s r) bs)
 (#<~) = isoVar1
 
 -- | A continuation-based version of 'partsVar'.  Instead of binding the
@@ -464,7 +476,7 @@ infixr 1 #<~
 --              (\\(i ::\< b ::\< Ø) -\> F i b        )
 --
 -- stuff :: 'BP' s '[Foo] a
--- stuff = 'withInps' $ \\(foo :< Ø) -\> do
+-- stuff = 'withInp' $ \\(foo :< Ø) -\> do
 --     'withParts' fooIso foo $ \\(i :< b :< Ø) -\> do
 --       -- now, i is a 'BVar' pointing to the 'Int' inside foo
 --       -- and b is a 'BVar' pointing to the 'Bool' inside foo
@@ -477,18 +489,18 @@ infixr 1 #<~
 withIso1
     :: Every Num bs
     => Iso' b (Tuple bs)
-    -> BVar s rs b
-    -> (Prod (BVar s rs) bs -> BP s rs a)
-    -> BP s rs a
+    -> BVar s r b
+    -> (Prod (BVar s r) bs -> BP s r a)
+    -> BP s r a
 withIso1 i r f = do
     p <- isoVar1 i r
     f p
 
 withParts
     :: (Every Num bs, Parts bs b)
-    => BVar s rs b
-    -> (Prod (BVar s rs) bs -> BP s rs a)
-    -> BP s rs a
+    => BVar s r b
+    -> (Prod (BVar s r) bs -> BP s r a)
+    -> BP s r a
 withParts r f = do
     p <- partsVar r
     f p
@@ -511,7 +523,7 @@ withParts r f = do
 ---- 'gSplit' :: 'BVar' rs Foo -> 'BP' s rs ('Prod' ('BVar' s rs) '[Int, Bool])
 ----
 ---- stuff :: 'BP' s '[Foo] a
----- stuff = 'withInps' $ \\(foo :< Ø) -\> do
+---- stuff = 'withInp' $ \\(foo :< Ø) -\> do
 ----     i :< b :< Ø <- 'gSplit' foo
 ----     -- now, i is a 'BVar' pointing to the 'Int' inside foo
 ----     -- and b is a 'BVar' pointing to the 'Bool' inside foo
@@ -531,7 +543,7 @@ withParts r f = do
 ----
 ---- @
 ---- stuff :: 'BP' s '[Foo] a
----- stuff = 'withInps' $ \\(foo :< Ø) -\> do
+---- stuff = 'withInp' $ \\(foo :< Ø) -\> do
 ----     i :< b :< Ø <- 'gTuple' '#<~' foo
 ----     -- now, i is a 'BVar' pointing to the 'Int' inside foo
 ----     -- and b is a 'BVar' pointing to the 'Bool' inside foo
@@ -570,7 +582,7 @@ withParts r f = do
 -- choicesVar barIso :: BVar rs Bar -> BP s rs (Sum I (BVar s rs) '[Int, Bool, String])
 --
 -- stuff :: 'BP' s '[Bar] a
--- stuff = 'withInps' $ \\(bar :< Ø) -\> do
+-- stuff = 'withInp' $ \\(bar :< Ø) -\> do
 --     c <- 'choicesVar' barIso bar
 --     case c of
 --       'InL' i -> do
@@ -589,10 +601,10 @@ withParts r f = do
 --
 -- See "Numeric.Backprop#sum" for a mini-tutorial on 'Sum'.
 choicesVar1
-    :: forall s rs bs b. Every Num bs
+    :: forall s r bs b. Every Num bs
     => Iso' b (Sum I bs)
-    -> BVar s rs b
-    -> BP s rs (Sum (BVar s rs) bs)
+    -> BVar s r b
+    -> BP s r (Sum (BVar s r) bs)
 choicesVar1 i r = do
     x <- BP $ resolveVar r
     let xs :: Sum I bs
@@ -636,7 +648,7 @@ choicesVar1 i r = do
 -- 'choicesVar' barIso :: BVar rs Bar -> BP s rs (Sum I (BVar s rs) '[Int, Bool, String])
 --
 -- stuff :: 'BP' s '[Bar] a
--- stuff = 'withInps' $ \\(bar :< Ø) -\> do
+-- stuff = 'withInp' $ \\(bar :< Ø) -\> do
 --     'withChoices' barIso bar $ \case
 --       'InL' i -> do
 --          -- in this branch, bar was made with the A constructor
@@ -654,11 +666,11 @@ choicesVar1 i r = do
 -- directly pattern match in the lambda, so there's a lot less syntactical
 -- noise.
 withChoices1
-    :: forall s rs bs b a. Every Num bs
+    :: forall s r bs b a. Every Num bs
     => Iso' b (Sum I bs)
-    -> BVar s rs b
-    -> (Sum (BVar s rs) bs -> BP s rs a)
-    -> BP s rs a
+    -> BVar s r b
+    -> (Sum (BVar s r) bs -> BP s r a)
+    -> BP s r a
 withChoices1 i r f = do
     c <- choicesVar1 i r
     f c
@@ -681,7 +693,7 @@ withChoices1 i r f = do
 --                )
 --
 -- stuff :: 'BP' s '[Bar] a
--- stuff = 'withInps' $ \\(bar :< Ø) -\> do
+-- stuff = 'withInp' $ \\(bar :< Ø) -\> do
 --     c <- barIso '?<~' bar
 --     case c of
 --       'InL' i -> do
@@ -698,8 +710,8 @@ infixr 1 ?<~
 (?<~)
     :: (Every Num bs, Known Length bs)
     => Iso' b (Sum I bs)
-    -> BVar s rs b
-    -> BP s rs (Sum (BVar s rs) bs)
+    -> BVar s r b
+    -> BP s r (Sum (BVar s r) bs)
 (?<~) = choicesVar1
 
 -- | A combination of 'partsVar' and 'choicesVar', that lets you split
@@ -727,7 +739,7 @@ infixr 1 ?<~
 -- 'sopVar' bazIso :: 'BVar' rs Baz -> 'BP' s rs ('Sum' ('Prod' ('BVar' s rs)) '[ '[Int, Bool], '[String, Double] ])
 --
 -- stuff :: 'BP' s '[Baz] a
--- stuff = 'withInps' $ \\(baz :< Ø) -\> do
+-- stuff = 'withInp' $ \\(baz :< Ø) -\> do
 --     c <- 'sopVar' barIso baz
 --     case c of
 --       'InL' (i :< b :< Ø) -> do
@@ -748,10 +760,10 @@ infixr 1 ?<~
 --
 -- See "Numeric.Backprop#sum" for a mini-tutorial on 'Sum'.
 sopVar
-    :: forall s rs bss b. Every (Every Num) bss
+    :: forall s r bss b. Every (Every Num) bss
     => Iso' b (Sum Tuple bss)
-    -> BVar s rs b
-    -> BP s rs (Sum (Prod (BVar s rs)) bss)
+    -> BVar s r b
+    -> BP s r (Sum (Prod (BVar s r)) bss)
 sopVar i r = do
     x <- BP $ resolveVar r
     let xs :: Sum Tuple bss
@@ -772,9 +784,9 @@ sopVar i r = do
       return $ imap1 (\ix' _ -> BVNode ix' r') ys
 
 choicesVar
-    :: forall s rs bss b. (Every (Every Num) bss, Choices bss b)
-    => BVar s rs b
-    -> BP s rs (Sum (Prod (BVar s rs)) bss)
+    :: forall s r bss b. (Every (Every Num) bss, Choices bss b)
+    => BVar s r b
+    -> BP s r (Sum (Prod (BVar s r)) bss)
 choicesVar = sopVar choices
 
 ---- | Using 'GHC.Generics.Generic' from "GHC.Generics" and
@@ -797,7 +809,7 @@ choicesVar = sopVar choices
 ---- 'gSplits' :: 'BVar' rs Baz -> 'BP' s rs ('Sum' ('Prod' ('BVar' s rs)) '[ '[Int, Bool], '[String, Double] ])
 ----
 ---- stuff :: 'BP' s '[Baz] a
----- stuff = 'withInps' $ \\(baz :< Ø) -\> do
+---- stuff = 'withInp' $ \\(baz :< Ø) -\> do
 ----     c <- gSplits baz
 ----     case c of
 ----       'InL' (i :< b :< Ø) -> do
@@ -1010,14 +1022,14 @@ opVar3 o rx ry rz = opVar o (rx :< ry :< rz :< Ø)
 --
 -- -- good
 -- errSquared :: Num a => 'BP' s '[a, a] a
--- errSquared = 'withInps' $ \\(r :< t :< Ø) -\> do
+-- errSquared = 'withInp' $ \\(r :< t :< Ø) -\> do
 --     let err = r - t
 --     e <- 'bindVar' err     -- force e, so that it's safe to use twice!
 --     'return' (e * e)
 --
 -- -- better
 -- errSquared :: Num a => 'BP' s '[a, a] a
--- errSquared = 'withInps' $ \\(r :< t :< Ø) -\> do
+-- errSquared = 'withInp' $ \\(r :< t :< Ø) -\> do
 --     let err = r - t
 --     e <- 'bindVar' err
 --     'bindVar' (e * e)      -- result is forced so user doesn't have to worry
@@ -1169,7 +1181,7 @@ backpropWith bp env = do
 --    => Length rs
 --    -> BPOpI s rs as
 --    -> BPOp s rs as
---implicitly' l f = withInps' l (itraverse1 (\ix -> bindVar \\ every @_ @Num ix) . f)
+--implicitly' l f = withInp' l (itraverse1 (\ix -> bindVar \\ every @_ @Num ix) . f)
 
 -- | Convert a 'BPOpI' into a 'BPOp'.  That is, convert a function on
 -- a bundle of 'BVar's (generating an implicit graph) into a fully fledged
@@ -1183,7 +1195,7 @@ implicitly
     :: Num a
     => BPOpI s r a
     -> BPOp s r a
-implicitly f = withInps $ bindVar . f
+implicitly f = withInp $ bindVar . f
 
 -- | Create a 'BVar' given an index into the input environment.  For an
 -- example,
@@ -1203,7 +1215,7 @@ implicitly f = withInps $ bindVar . f
 -- @'BP' s '[Int, Bool]@)
 --
 -- Typically, there shouldn't be any reason to use 'inpVar' directly.  It's
--- cleaner to get all of your input 'BVar's together using 'withInps' or
+-- cleaner to get all of your input 'BVar's together using 'withInp' or
 -- 'inpVars'.
 inpVar :: BVar s r r
 inpVar = BVInp
@@ -1214,7 +1226,7 @@ inpVar = BVInp
 --
 -- @
 -- foo :: 'BPOp' '[Double, Int] a
--- foo = 'withInps' $ \\(x :< y :< Ø) -\> do
+-- foo = 'withInp' $ \\(x :< y :< Ø) -\> do
 --     -- do stuff with inputs
 -- @
 --
@@ -1231,10 +1243,17 @@ inpVar = BVInp
 -- @
 --
 -- But just a little nicer!
-withInps
+withInp
     :: (BVar s r r -> BP s r a)
     -> BP s r a
-withInps f = f BVInp
+withInp f = f BVInp
+
+withInpParts
+    :: (Every Num rs, Parts rs r)
+    => (Prod (BVar s r) rs -> BP s r a)
+    -> BP s r a
+withInpParts f = withInp (f <=< partsVar)
+
 
 -- | Apply 'OpB' over a 'Prod' of 'BVar's, as inputs. Provides
 -- "implicit-graph" back-propagation, with deferred evaluation.
@@ -1415,7 +1434,7 @@ data BPCont :: Type -> Type -> Type -> Type -> Type where
 --
 --
 -- foo :: BP s '[ MyGADT b ] a
--- foo = 'withInps' $ \\( gVar :< Ø ) -\>
+-- foo = 'withInp' $ \\( gVar :< Ø ) -\>
 --     withGADT gVar $ \\case
 --       A s i -\> BPC (s ::< i ::< Ø) (\\(s' ::< i' ::< Ø) -\> A s i) $
 --         \\(sVar :\< iVar) -\> do

@@ -130,7 +130,7 @@ type BPOp r a = forall s. BVar s r r -> BVar s r a
 -- >>> 'backprop' foo (2 ::< 3 ::< Ø)
 -- (11.46, 13.73 ::< 6.12 ::< Ø)
 backprop :: Num r => BPOp r a -> r -> (a, r)
-backprop f = BP.backprop (BP.withInps (return . f))
+backprop f = BP.backprop (BP.withInp (return . f))
 
 -- | Run the 'BPOp' on an input tuple and return the gradient of the result
 -- with respect to the input tuple.

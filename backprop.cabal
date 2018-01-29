@@ -36,10 +36,10 @@ library
                        Numeric.Backprop.Implicit
                        Numeric.Backprop.Iso
                        Numeric.Backprop.Parts
+                       Numeric.Backprop.Op
                        -- Numeric.Backprop.Mono
                        -- Numeric.Backprop.Mono.Implicit
-                       Numeric.Backprop.Op
-                       Numeric.Backprop.Op.Mono
+                       -- Numeric.Backprop.Op.Mono
   other-modules:       Numeric.Backprop.Internal
                        Data.Type.Util
   build-depends:       base >= 4.7 && < 5
