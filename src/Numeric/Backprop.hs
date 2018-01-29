@@ -1,13 +1,14 @@
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE GADTs               #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE PatternSynonyms     #-}
-{-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE RecordWildCards     #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications    #-}
-{-# LANGUAGE TypeInType          #-}
-{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE PatternSynonyms       #-}
+{-# LANGUAGE RankNTypes            #-}
+{-# LANGUAGE RecordWildCards       #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeApplications      #-}
+{-# LANGUAGE TypeInType            #-}
+{-# LANGUAGE TypeOperators         #-}
 
 -- |
 -- Module      : Numeric.Backprop
@@ -63,29 +64,27 @@ module Numeric.Backprop (
   , runOpB, gradOpB, gradOpB'
   -- ** Utility combinators
   , withInps, implicitly
-  , withInps', implicitly'
   -- * Vars
   , constVar
-  , inpVar, inpVars
+  , inpVar
   , bpOp
   , bindVar
-  , inpVars'
   -- ** From Ops
   , opVar, (~$)
   , opVar1, opVar2, opVar3
   , (-$)
-  , opVarMulti, (~$$), (-$$)
+  , opVarMulti, (~$$)
   -- ** Var manipulation
-  , isoVar
+  , isoVar, isoVar1, withIso1
   -- *** As parts
   , partsVar, (#<~), withParts
-  , splitVars, gSplit, gTuple
+  , gTuple
   -- *** As sums
-  , choicesVar, (?<~), withChoices
+  , choicesVar, (?<~), choicesVar1, withChoices1
   -- $sum
   , Sum(..)
   -- *** As sums of products
-  , sopVar, gSplits, gSOP
+  , sopVar
   -- *** As GADTs
   , withGADT, BPCont(..)
   -- ** Combining
@@ -110,9 +109,11 @@ import           Control.Monad.Base
 import           Control.Monad.Reader
 import           Control.Monad.ST
 import           Control.Monad.State
+import           Data.Bifunctor
 import           Data.Kind
 import           Data.Maybe
 import           Data.Monoid               ((<>))
+import           Data.Profunctor
 import           Data.STRef
 import           Data.Type.Combinator
 import           Data.Type.Conjunction
@@ -237,7 +238,7 @@ import qualified Generics.SOP              as SOP
 --
 -- See documentation for 'BP' for an explanation of the phantom type
 -- parameter @s@.
-type BPOp s rs as  = BP s rs (Prod (BVar s rs) as)
+type BPOp s r a  = BP s r (BVar s r a)
 
 -- | An "implicit" operation on 'BVar's that can be backpropagated.
 -- A value of type:
@@ -260,8 +261,14 @@ type BPOp s rs as  = BP s rs (Prod (BVar s rs) as)
 -- synonym exists in "Numeric.Backprop" just for the 'implicitly' function,
 -- which can convert "implicit" backprop functions like a @'BPOpI' s rs a@
 -- into an "explicit" graph backprop function, a @'BPOp' s rs a@.
-type BPOpI s rs as = Prod (BVar s rs) rs -> Prod (BVar s rs) as
+type BPOpI s r a = BVar s r r -> BVar s r a
 
+
+class Parts bs a where
+    parts :: Iso' a (Tuple bs)
+
+class Choices bss a where
+    choices :: Iso' a (Sum Tuple bss)
 
 -- | Apply an 'OpB' to a 'Prod' (tupling) of 'BVar's.
 --
@@ -301,10 +308,10 @@ type BPOpI s rs as = Prod (BVar s rs) rs -> Prod (BVar s rs) as
 --
 -- 'opVar' can be thought of as a "binding" version of 'liftB'.
 opVar
-    :: forall s rs as a. Num a
+    :: forall s r as a. Num a
     => OpB s as '[a]
-    -> Prod (BVar s rs) as
-    -> BP s rs (BVar s rs a)
+    -> Prod (BVar s r) as
+    -> BP s r (BVar s r a)
 opVar o i = do
     xs <- traverse1 (fmap I . BP . resolveVar) i
     (res, gf) <- BP . liftBase $ runOpM' o xs
@@ -319,10 +326,10 @@ opVar o i = do
     return (BVNode IZ r)
 
 opVarMulti
-    :: forall s rs as bs. Every Num bs
+    :: forall s r as bs. Every Num bs
     => OpB s as bs
-    -> Prod (BVar s rs) as
-    -> BP s rs (Prod (BVar s rs) bs)
+    -> Prod (BVar s r) as
+    -> BP s r (Prod (BVar s r) bs)
 opVarMulti o i = do
     xs <- traverse1 (fmap I . BP . resolveVar) i
     (res, gf) <- BP . liftBase $ runOpM' o xs
@@ -340,40 +347,16 @@ infixr 5 ~$$
 (~$$)
     :: Every Num bs
     => OpB s as bs
-    -> Prod (BVar s rs) as
-    -> BP s rs (Prod (BVar s rs) bs)
+    -> Prod (BVar s r) as
+    -> BP s r (Prod (BVar s r) bs)
 (~$$) = opVarMulti
 
-infixr 5 -$$
-(-$$)
-    :: (Every Num as, Known Length as, Every Num bs)
-    => BPOp s as bs
-    -> Prod (BVar s rs) as
-    -> BP s rs (Prod (BVar s rs) bs)
-o -$$ xs = bpOp o ~$$ xs
-
--- | Split out a 'BVar' of a tuple into a tuple ('Prod') of 'BVar's.
---
--- @
--- -- the environment is a single Int-Bool tuple, tup
--- stuff :: 'BP' s '[ Tuple '[Int, Bool] ] a
--- stuff = 'withInps' $ \\(tup :< Ø) -\> do
---     i :< b :< Ø <- 'splitVars' tup
---     -- now, i is a 'BVar' pointing to the 'Int' inside tup
---     -- and b is a 'BVar' pointing to the 'Bool' inside tup
---     -- you can do stuff with the i and b here
--- @
---
--- Note that
---
--- @
--- 'splitVars' = 'partsVar' 'id'
--- @
-splitVars
-    :: forall s rs as. Every Num as
-    => BVar s rs (Tuple as)
-    -> BP s rs (Prod (BVar s rs) as)
-splitVars = partsVar id
+-- infixr 5 -$$
+-- (-$$)
+--     :: BPOp s a b
+--     -> BVar s r a
+--     -> BP s r b
+-- o -$$ xs = bpOp o ~$$ _
 
 -- | Use an 'Iso' (or compatible 'Control.Lens.Iso.Iso' from the lens
 -- library) to "pull out" the parts of a data type and work with each part
@@ -411,21 +394,20 @@ splitVars = partsVar id
 -- Also, if you are literally passing a tuple (like
 -- @'BP' s '[Tuple '[Int, Bool]@) then you can give in the identity
 -- isomorphism ('id') or use 'splitVars'.
-partsVar
+isoVar1
     :: forall s rs bs b. Every Num bs
     => Iso' b (Tuple bs)
     -> BVar s rs b
     -> BP s rs (Prod (BVar s rs) bs)
-partsVar i = fmap (view sum1) . sopVar (i . resum1)
+isoVar1 i = fmap (view sum1) . sopVar (i . resum1)
 
 isoVar
-    :: forall s rs as bs. (Every Num bs)
+    :: forall s r as bs. (Every Num bs)
     => Iso' (Tuple as) (Tuple bs)
-    -> Prod (BVar s rs) as
-    -> BPOp s rs bs
+    -> Prod (BVar s r) as
+    -> BP s r (Prod (BVar s r) bs)
 isoVar i vs = do
     xs <- traverse1 (fmap I . BP . resolveVar) vs
-
     let ys :: Tuple bs
         ys = view i xs
         bp :: BPNode s rs as bs
@@ -439,8 +421,13 @@ isoVar i vs = do
     itraverse1_ (\ix v -> registerVar (IRNode ix r) v) vs
     return $ imap1 (\ix _ -> BVNode ix r) ys
 
+partsVar
+    :: forall s rs bs b. (Every Num bs, Parts bs b)
+    => BVar s rs b
+    -> BP s rs (Prod (BVar s rs) bs)
+partsVar = isoVar1 parts
 
--- | A useful infix alias for 'partsVar'.
+-- | A useful infix alias for 'isoVar1'.
 --
 -- Building on the example from 'partsVar':
 --
@@ -467,7 +454,7 @@ infixr 1 #<~
     => Iso' b (Tuple bs)
     -> BVar s rs b
     -> BP s rs (Prod (BVar s rs) bs)
-(#<~) = partsVar
+(#<~) = isoVar1
 
 -- | A continuation-based version of 'partsVar'.  Instead of binding the
 -- parts and using it in the rest of the block, provide a continuation to
@@ -493,66 +480,75 @@ infixr 1 #<~
 -- Useful so that you can work with the internal parts of the data type
 -- in a closure, so the parts don't leak out to the rest of your 'BP'.
 -- But, mostly just a stylistic choice.
-withParts
+withIso1
     :: Every Num bs
     => Iso' b (Tuple bs)
     -> BVar s rs b
     -> (Prod (BVar s rs) bs -> BP s rs a)
     -> BP s rs a
-withParts i r f = do
-    p <- partsVar i r
+withIso1 i r f = do
+    p <- isoVar1 i r
     f p
 
--- | Using 'GHC.Generics.Generic' from "GHC.Generics" and
--- 'Generics.SOP.Generic' from "Generics.SOP", /split/ a 'BVar' containing
--- a product type into a tuple ('Prod') of 'BVar's pointing to each value
--- inside.
---
--- Building on the example from 'partsVar':
---
--- @
--- import qualified Generics.SOP as SOP
---
--- data Foo = F Int Bool
---   deriving Generic
---
--- instance SOP.Generic Foo
---
--- 'gSplit' :: 'BVar' rs Foo -> 'BP' s rs ('Prod' ('BVar' s rs) '[Int, Bool])
---
--- stuff :: 'BP' s '[Foo] a
--- stuff = 'withInps' $ \\(foo :< Ø) -\> do
---     i :< b :< Ø <- 'gSplit' foo
---     -- now, i is a 'BVar' pointing to the 'Int' inside foo
---     -- and b is a 'BVar' pointing to the 'Bool' inside foo
---     -- you can do stuff with the i and b here
--- @
---
--- Because @Foo@ is a straight up product type, 'gSplit' can use
--- "GHC.Generics" and take out the items inside.
---
--- Note that because
---
--- @
--- 'gSplit' = 'splitVars' 'gTuple'
--- @
---
--- Then, you can also use 'gTuple' with '#<~':
---
--- @
--- stuff :: 'BP' s '[Foo] a
--- stuff = 'withInps' $ \\(foo :< Ø) -\> do
---     i :< b :< Ø <- 'gTuple' '#<~' foo
---     -- now, i is a 'BVar' pointing to the 'Int' inside foo
---     -- and b is a 'BVar' pointing to the 'Bool' inside foo
---     -- you can do stuff with the i and b here
--- @
---
-gSplit
-    :: (Every Num bs, SOP.Generic b, SOP.Code b ~ '[bs])
+withParts
+    :: (Every Num bs, Parts bs b)
     => BVar s rs b
-    -> BP s rs (Prod (BVar s rs) bs)
-gSplit = partsVar gTuple
+    -> (Prod (BVar s rs) bs -> BP s rs a)
+    -> BP s rs a
+withParts r f = do
+    p <- partsVar r
+    f p
+
+---- | Using 'GHC.Generics.Generic' from "GHC.Generics" and
+---- 'Generics.SOP.Generic' from "Generics.SOP", /split/ a 'BVar' containing
+---- a product type into a tuple ('Prod') of 'BVar's pointing to each value
+---- inside.
+----
+---- Building on the example from 'partsVar':
+----
+---- @
+---- import qualified Generics.SOP as SOP
+----
+---- data Foo = F Int Bool
+----   deriving Generic
+----
+---- instance SOP.Generic Foo
+----
+---- 'gSplit' :: 'BVar' rs Foo -> 'BP' s rs ('Prod' ('BVar' s rs) '[Int, Bool])
+----
+---- stuff :: 'BP' s '[Foo] a
+---- stuff = 'withInps' $ \\(foo :< Ø) -\> do
+----     i :< b :< Ø <- 'gSplit' foo
+----     -- now, i is a 'BVar' pointing to the 'Int' inside foo
+----     -- and b is a 'BVar' pointing to the 'Bool' inside foo
+----     -- you can do stuff with the i and b here
+---- @
+----
+---- Because @Foo@ is a straight up product type, 'gSplit' can use
+---- "GHC.Generics" and take out the items inside.
+----
+---- Note that because
+----
+---- @
+---- 'gSplit' = 'splitVars' 'gTuple'
+---- @
+----
+---- Then, you can also use 'gTuple' with '#<~':
+----
+---- @
+---- stuff :: 'BP' s '[Foo] a
+---- stuff = 'withInps' $ \\(foo :< Ø) -\> do
+----     i :< b :< Ø <- 'gTuple' '#<~' foo
+----     -- now, i is a 'BVar' pointing to the 'Int' inside foo
+----     -- and b is a 'BVar' pointing to the 'Bool' inside foo
+----     -- you can do stuff with the i and b here
+---- @
+----
+--gSplit
+--    :: (Every Num bs, SOP.Generic b, SOP.Code b ~ '[bs])
+--    => BVar s rs b
+--    -> BP s rs (Prod (BVar s rs) bs)
+--gSplit = partsVar gTuple
 
 -- | Use an 'Iso' (or compatible 'Control.Lens.Iso.Iso' from the lens
 -- library) to "pull out" the different constructors of a sum type and
@@ -598,12 +594,12 @@ gSplit = partsVar gTuple
 -- then branch on which constructor the value was made with.
 --
 -- See "Numeric.Backprop#sum" for a mini-tutorial on 'Sum'.
-choicesVar
+choicesVar1
     :: forall s rs bs b. Every Num bs
     => Iso' b (Sum I bs)
     -> BVar s rs b
     -> BP s rs (Sum (BVar s rs) bs)
-choicesVar i r = do
+choicesVar1 i r = do
     x <- BP $ resolveVar r
     let xs :: Sum I bs
         xs = view i x
@@ -663,14 +659,14 @@ choicesVar i r = do
 -- result a superfluous name before pattern matching on it.  You can just
 -- directly pattern match in the lambda, so there's a lot less syntactical
 -- noise.
-withChoices
+withChoices1
     :: forall s rs bs b a. Every Num bs
     => Iso' b (Sum I bs)
     -> BVar s rs b
     -> (Sum (BVar s rs) bs -> BP s rs a)
     -> BP s rs a
-withChoices i r f = do
-    c <- choicesVar i r
+withChoices1 i r f = do
+    c <- choicesVar1 i r
     f c
 
 -- | A useful infix alias for 'choicesVar'.
@@ -710,7 +706,7 @@ infixr 1 ?<~
     => Iso' b (Sum I bs)
     -> BVar s rs b
     -> BP s rs (Sum (BVar s rs) bs)
-(?<~) = choicesVar
+(?<~) = choicesVar1
 
 -- | A combination of 'partsVar' and 'choicesVar', that lets you split
 -- a type into a sum of products.  Using an 'Iso' (or compatible
@@ -781,60 +777,66 @@ sopVar i r = do
       registerVar (IRNode IZ r') r
       return $ imap1 (\ix' _ -> BVNode ix' r') ys
 
--- | Using 'GHC.Generics.Generic' from "GHC.Generics" and
--- 'Generics.SOP.Generic' from "Generics.SOP", /split/ a 'BVar' containing
--- a sum of products (any simple ADT, essentialy) into a 'Sum' of each
--- constructor, each containing a tuple ('Prod') of 'BVar's pointing to
--- each value inside.
---
--- Building on the example from 'sopVar':
---
--- @
--- import qualified Generics.SOP as SOP
---
--- data Baz = A Int    Bool
---          | B String Double
---   deriving Generic
---
--- instance SOP.Generic Baz
---
--- 'gSplits' :: 'BVar' rs Baz -> 'BP' s rs ('Sum' ('Prod' ('BVar' s rs)) '[ '[Int, Bool], '[String, Double] ])
---
--- stuff :: 'BP' s '[Baz] a
--- stuff = 'withInps' $ \\(baz :< Ø) -\> do
---     c <- gSplits baz
---     case c of
---       'InL' (i :< b :< Ø) -> do
---          -- in this branch, baz was made with the A constructor
---          -- i and b are the Int and Bool inside it
---       'InR' ('InL' (s :< d :< Ø)) -> do
---          -- in this branch, baz was made with the B constructor
---          -- s and d are the String and Double inside it
--- @
---
--- Because @Foo@ is a straight up sum-of-products type, 'gSplits' can use
--- "GHC.Generics" and take out the items inside.
---
--- Note:
---
--- @
--- 'gSplit' = 'splitVars' 'gSOP'
--- @
---
--- See "Numeric.Backprop#sum" for a mini-tutorial on 'Sum'.
-gSplits
-    :: forall s rs b. (SOP.Generic b, Every (Every Num) (SOP.Code b))
+choicesVar
+    :: forall s rs bss b. (Every (Every Num) bss, Choices bss b)
     => BVar s rs b
-    -> BP s rs (Sum (Prod (BVar s rs)) (SOP.Code b))
-gSplits = sopVar gSOP
+    -> BP s rs (Sum (Prod (BVar s rs)) bss)
+choicesVar = sopVar choices
+
+---- | Using 'GHC.Generics.Generic' from "GHC.Generics" and
+---- 'Generics.SOP.Generic' from "Generics.SOP", /split/ a 'BVar' containing
+---- a sum of products (any simple ADT, essentialy) into a 'Sum' of each
+---- constructor, each containing a tuple ('Prod') of 'BVar's pointing to
+---- each value inside.
+----
+---- Building on the example from 'sopVar':
+----
+---- @
+---- import qualified Generics.SOP as SOP
+----
+---- data Baz = A Int    Bool
+----          | B String Double
+----   deriving Generic
+----
+---- instance SOP.Generic Baz
+----
+---- 'gSplits' :: 'BVar' rs Baz -> 'BP' s rs ('Sum' ('Prod' ('BVar' s rs)) '[ '[Int, Bool], '[String, Double] ])
+----
+---- stuff :: 'BP' s '[Baz] a
+---- stuff = 'withInps' $ \\(baz :< Ø) -\> do
+----     c <- gSplits baz
+----     case c of
+----       'InL' (i :< b :< Ø) -> do
+----          -- in this branch, baz was made with the A constructor
+----          -- i and b are the Int and Bool inside it
+----       'InR' ('InL' (s :< d :< Ø)) -> do
+----          -- in this branch, baz was made with the B constructor
+----          -- s and d are the String and Double inside it
+---- @
+----
+---- Because @Foo@ is a straight up sum-of-products type, 'gSplits' can use
+---- "GHC.Generics" and take out the items inside.
+----
+---- Note:
+----
+---- @
+---- 'gSplit' = 'splitVars' 'gSOP'
+---- @
+----
+---- See "Numeric.Backprop#sum" for a mini-tutorial on 'Sum'.
+--gSplits
+--    :: forall s rs b. (SOP.Generic b, Every (Every Num) (SOP.Code b))
+--    => BVar s rs b
+--    -> BP s rs (Sum (Prod (BVar s rs)) (SOP.Code b))
+--gSplits = sopVar gSOP
 
 resolveVar
-    :: (MonadReader (Tuple rs) m, MonadBase (ST s) m)
-    => BVar s rs a
+    :: (MonadReader r m, MonadBase (ST s) m)
+    => BVar s r a
     -> m a
 resolveVar = \case
     BVNode  ix r -> getI . index ix . _bpnRes <$> liftBase (readSTRef r)
-    BVInp   ix   -> getI . index ix <$> ask
+    BVInp        -> ask
     BVConst    x -> return x
     BVOp    rs o -> do
       xs <- traverse1 (fmap I . resolveVar) rs
@@ -848,7 +850,8 @@ registerVar
 registerVar bpir = \case
     BVNode  ix' r' -> BP . liftBase . modifySTRef r' $
                         over (bpnOut . indexP ix' . _FRInternal) (bpir :)
-    BVInp   ix'    -> BP $ modifying (bpsSources . indexP ix' . _FRInternal) (bpir :)
+    BVInp          -> BP $
+      bpsSource . _FRInternal %= (bpir :)
     BVConst _      -> return ()
     -- This independently makes a new BPPipe for every usage site of the
     -- BVOp, so it's a bit inefficient.
@@ -890,10 +893,10 @@ registerVar bpir = \case
 --
 infixr 5 ~$
 (~$)
-    :: Num a
+    :: forall s r as a. Num a
     => OpB s as '[a]
-    -> Prod (BVar s rs) as
-    -> BP s rs (BVar s rs a)
+    -> Prod (BVar s r) as
+    -> BP s r (BVar s r a)
 (~$) = opVar
 
 -- | Lets you treat a @'BPOp' s as b@ as an @'Op' as b@, and "apply"
@@ -913,11 +916,12 @@ infixr 5 ~$
 -- environment.
 infixr 5 -$
 (-$)
-    :: (Every Num as, Known Length as, Num a)
-    => BPOp s as '[a]
-    -> Prod (BVar s rs) as
-    -> BP s rs (BVar s rs a)
-o -$ xs = bpOp o ~$ xs
+    -- :: (Every Num as, Known Length as, Num a)
+    :: (Num a, Num b)
+    => BPOp s a b
+    -> BVar s r a
+    -> BP s r (BVar s r b)
+o -$ x = bpOp o ~$ only x
 
 -- | Create a 'BVar' that represents just a specific value, that doesn't
 -- depend on any other 'BVar's.
@@ -942,8 +946,8 @@ constVar = BVConst
 opVar1
     :: Num b
     => OpB s '[a] '[b]
-    -> BVar s rs a
-    -> BP s rs (BVar s rs b)
+    -> BVar s r a
+    -> BP s r (BVar s r b)
 opVar1 o = opVar o . only
 
 -- | Convenient wrapper over 'opVar' that takes an 'OpB' with two arguments
@@ -965,9 +969,9 @@ opVar1 o = opVar o . only
 opVar2
     :: Num c
     => OpB s '[a,b] '[c]
-    -> BVar s rs a
-    -> BVar s rs b
-    -> BP s rs (BVar s rs c)
+    -> BVar s r a
+    -> BVar s r b
+    -> BP s r (BVar s r c)
 opVar2 o rx ry = opVar o (rx :< ry :< Ø)
 
 -- | Convenient wrapper over 'opVar' that takes an 'OpB' with three arguments
@@ -990,10 +994,10 @@ opVar2 o rx ry = opVar o (rx :< ry :< Ø)
 opVar3
     :: Num d
     => OpB s '[a,b,c] '[d]
-    -> BVar s rs a
-    -> BVar s rs b
-    -> BVar s rs c
-    -> BP s rs (BVar s rs d)
+    -> BVar s r a
+    -> BVar s r b
+    -> BVar s r c
+    -> BP s r (BVar s r d)
 opVar3 o rx ry rz = opVar o (rx :< ry :< rz :< Ø)
 
 -- | Concretizes a delayed 'BVar'.  If you build up a 'BVar' using numeric
@@ -1039,19 +1043,19 @@ opVar3 o rx ry rz = opVar o (rx :< ry :< rz :< Ø)
 -- Note that 'bindVar' on 'BVar's that are already forced is a no-op.
 bindVar
     :: Num a
-    => BVar s rs a
-    -> BP s rs (BVar s rs a)
+    => BVar s r a
+    -> BP s r (BVar s r a)
 bindVar r = case r of
     BVNode  _  _ -> return r
-    BVInp   _    -> return r
+    BVInp        -> return r
     BVConst _    -> return r
     BVOp    rs o -> opVar o rs
 
 
 
 backwardPass
-    :: forall s rs a. ()
-    => BPInpRef s rs a
+    :: forall s r a. ()
+    => BPInpRef s r a
     -> ST s a
 backwardPass = \case
     IRNode  ix r' -> getI . index ix <$> pullNode r'
@@ -1060,7 +1064,7 @@ backwardPass = \case
   where
     pullNode
         :: forall as bs. Every Num bs
-        => STRef s (BPNode s rs as bs)
+        => STRef s (BPNode s r as bs)
         -> ST s (Tuple as)
     pullNode r = caching bpnGradCache r $ \BPN{..} -> do
         totdervs <- ifor1 _bpnOut $ \ix -> every @_ @Num ix // \case
@@ -1071,7 +1075,7 @@ backwardPass = \case
         return g
     pullPipe
         :: forall as bs. ()
-        => STRef s (BPPipe s rs as bs)
+        => STRef s (BPPipe s r as bs)
         -> ST s (Tuple as)
     pullPipe r = caching bppGradCache r $ \BPP{..} ->
         _bppGradFunc =<< traverse1 (fmap I . backwardPass) _bppOut
@@ -1080,14 +1084,10 @@ backwardPass = \case
 -- the operation it represents, as well as the gradient of the result with
 -- respect to its inputs.  See module header for "Numeric.Backprop" and
 -- package documentation for examples and usages.
-backprop
-    :: Every Num rs
-    => (forall s. BPOp s rs as)
-    -> Tuple rs
-    -> (Tuple as, Tuple rs)
+backprop :: Num r => (forall s. BPOp s r a) -> r -> (a, r)
 backprop bp env = runST $ do
     (res, gFunc) <- backpropWith bp env
-    grad <- gFunc (map1 (const Nothing) res)
+    grad <- gFunc Nothing
     return (res, grad)
 
 -- | Turn a 'BPOp' into an 'OpB'.  Basically converts a 'BP' taking an @rs@
@@ -1101,40 +1101,41 @@ backprop bp env = runST $ do
 -- Handy because an 'OpB' can be used with almost all of
 -- the 'Op'-related functions in this moduel, including 'opVar', '~$', etc.
 bpOp
-    :: Every Num rs
-    => BPOp s rs as
-    -> OpB s rs as
-bpOp bp = OpM $ backpropWith bp
+    :: Num r
+    => BPOp s r a
+    -> OpB s '[r] '[a]
+bpOp bp = OpM
+        . dimap (getI . head') (fmap (bimap only_ (dimap head' (fmap only_))))
+        $ backpropWith bp
 
 -- | Simply run the 'BPOp' on an input tuple, getting the result without
 -- bothering with the gradient or with back-propagation.
 evalBPOp
-    :: (forall s. BPOp s rs as) -- ^ 'BPOp' to run
-    -> Tuple rs                 -- ^ input
-    -> Tuple as                 -- ^ output
+    :: (forall s. BPOp s r a)   -- ^ 'BPOp' to run
+    -> r                        -- ^ input
+    -> a                        -- ^ output
 evalBPOp bp env = runST $ do
-    r <- evalStateT (runReaderT (bpST bp) env)
-                    (BPS (map1 (\_ -> FRInternal []) env))
-    runReaderT (traverse1 (fmap I . resolveVar) r) env
+    r <- evalStateT (runReaderT (bpST bp) env) (BPS (FRInternal []))
+    runReaderT (resolveVar r) env
 
 -- | Run the 'BPOp' on an input tuple and return the gradient of the result
 -- with respect to the input tuple.
 gradBPOp
-    :: Every Num rs
-    => (forall s. BPOp s rs a)  -- ^ 'BPOp' to differentiate'
-    -> Tuple rs                 -- ^ input
-    -> Tuple rs                 -- ^ gradient
+    :: Num r
+    => (forall s. BPOp s r a)   -- ^ 'BPOp' to differentiate'
+    -> r                        -- ^ input
+    -> r                        -- ^ gradient
 gradBPOp bp = snd . backprop bp
 
 closeOff
-    :: (MonadReader (Tuple rs) m, MonadState (BPState s rs) m, MonadBase (ST s) m)
+    :: (MonadReader r m, MonadState (BPState s r) m, MonadBase (ST s) m)
     => Bool
     -> Maybe a
-    -> BVar s rs a
+    -> BVar s r a
     -> m ()
 closeOff isTerminal gOut = \case
     BVNode  ix sr -> liftBase $ modifySTRef sr (over (bpnOut . indexP ix) (<> fr))
-    BVInp   ix'   -> modifying (bpsSources . indexP ix') (<> fr)
+    BVInp         -> bpsSource %= (<> fr)
     BVConst _     -> return ()
     BVOp    rs o  -> do
       xs <- traverse1 (fmap I . resolveVar) rs
@@ -1147,38 +1148,34 @@ closeOff isTerminal gOut = \case
 
 -- | WARNING: the gradient continuation must only be run ONCE!
 backpropWith
-    :: Every Num rs
-    => BPOp s rs as
-    -> Tuple rs
-    -> ST s (Tuple as, Prod Maybe as -> ST s (Tuple rs))
+    :: Num r
+    => BPOp s r a
+    -> r
+    -> ST s (a, Maybe a -> ST s r)
 backpropWith bp env = do
-    (r, bps0) <- runStateT (runReaderT (bpST bp) env)
-                           (BPS (map1 (\_ -> FRInternal []) env))
-    res <- runReaderT (traverse1 (fmap I . resolveVar) r) env
+    (r, bps0) <- runStateT (runReaderT (bpST bp) env) (BPS (FRInternal []))
+    res <- runReaderT (resolveVar r) env
     let gradFunc gradOut = do
-          -- BPS{..} <- execStateT (runReaderT (closeOff True gradOut r) env) bps0
-          BPS{..} <- flip execStateT bps0 . flip runReaderT env $ do
-            for1_ (gradOut `zipP` r) $ \(g :&: v) ->
-              closeOff True g v
-          ifor1 _bpsSources $ \ix rs -> every @_ @Num ix // do
-            I <$> case rs of
-              FRInternal rs' -> sum <$> traverse backwardPass rs'
-              FRTerminal g   -> return $ fromMaybe 1 g
+          BPS{..} <- flip execStateT bps0 . flip runReaderT env $
+            closeOff True gradOut r
+          case _bpsSource of
+            FRInternal rs' -> sum <$> traverse backwardPass rs'
+            FRTerminal g   -> return $ fromMaybe 1 g
     return (res, gradFunc)
 
--- | A version of 'implicitly' taking explicit 'Length', indicating the
--- number of inputs required and their types.
---
--- Requiring an explicit 'Length' is mostly useful for rare "extremely
--- polymorphic" situations, where GHC can't infer the type and length of
--- the list of inputs.  If you ever actually explicitly write down @rs@ as
--- a list of types, you should be able to just use 'implicitly'.
-implicitly'
-    :: Every Num as
-    => Length rs
-    -> BPOpI s rs as
-    -> BPOp s rs as
-implicitly' l f = withInps' l (itraverse1 (\ix -> bindVar \\ every @_ @Num ix) . f)
+---- | A version of 'implicitly' taking explicit 'Length', indicating the
+---- number of inputs required and their types.
+----
+---- Requiring an explicit 'Length' is mostly useful for rare "extremely
+---- polymorphic" situations, where GHC can't infer the type and length of
+---- the list of inputs.  If you ever actually explicitly write down @rs@ as
+---- a list of types, you should be able to just use 'implicitly'.
+--implicitly'
+--    :: Every Num as
+--    => Length rs
+--    -> BPOpI s rs as
+--    -> BPOp s rs as
+--implicitly' l f = withInps' l (itraverse1 (\ix -> bindVar \\ every @_ @Num ix) . f)
 
 -- | Convert a 'BPOpI' into a 'BPOp'.  That is, convert a function on
 -- a bundle of 'BVar's (generating an implicit graph) into a fully fledged
@@ -1189,10 +1186,10 @@ implicitly' l f = withInps' l (itraverse1 (\ix -> bindVar \\ every @_ @Num ix) .
 -- it might be more convenient to use "Numeric.Backprop.Implicit" instead,
 -- which is geared around that use case.
 implicitly
-    :: (Known Length rs, Every Num as)
-    => BPOpI s rs as
-    -> BPOp s rs as
-implicitly = implicitly' known
+    :: Num a
+    => BPOpI s r a
+    -> BPOp s r a
+implicitly f = withInps $ bindVar . f
 
 -- | Create a 'BVar' given an index into the input environment.  For an
 -- example,
@@ -1214,55 +1211,8 @@ implicitly = implicitly' known
 -- Typically, there shouldn't be any reason to use 'inpVar' directly.  It's
 -- cleaner to get all of your input 'BVar's together using 'withInps' or
 -- 'inpVars'.
-inpVar
-    :: Index rs a
-    -> BVar s rs a
+inpVar :: BVar s r r
 inpVar = BVInp
-
--- | Get a 'Prod' (tupling) of 'BVar's for all of the input environment
--- (@rs@) of the @'BP' s rs@
---
--- For example, if your 'BP' has an 'Int' and 'Double' in its input
--- environment (a @'BP' s '[Int, Double]@), this would return a 'BVar'
--- pointing to the 'Int' and a 'BVar' pointing to the 'Double'.
---
--- @
--- case ('inpVars' :: 'Prod' ('BVar' s '[Int, Double]) '[Int, Double]) of
---   x :\< y :\< Ø -\> do
---     -- the first item, x, is a var to the input 'Int'
---     -- x :: 'BVar' s '[Int, Double] Int
---     -- the second item, y, is a var to the input 'Double'
---     -- y :: 'BVar' s '[Int, Double] Double
--- @
-inpVars
-    :: Known Length rs
-    => Prod (BVar s rs) rs
-inpVars = inpVars' known
-
--- | A version of 'inpVars' taking explicit 'Length', indicating the
--- number of inputs required and their types.
---
--- Mostly useful for rare "extremely polymorphic" situations, where GHC
--- can't infer the type and length of the list of inputs.  If you ever
--- actually explicitly write down @rs@ as a list of types, you should be
--- able to just use 'inpVars'.
-inpVars'
-    :: Length rs
-    -> Prod (BVar s rs) rs
-inpVars' = map1 inpVar . indices'
-
--- | A version of 'withInps' taking explicit 'Length', indicating the
--- number of inputs required and their types.
---
--- Mostly useful for rare "extremely polymorphic" situations, where GHC
--- can't infer the type and length of the list of inputs.  If you ever
--- actually explicitly write down @rs@ as a list of types, you should be
--- able to just use 'withInps'.
-withInps'
-    :: Length rs
-    -> (Prod (BVar s rs) rs -> BP s rs a)
-    -> BP s rs a
-withInps' l f = f (inpVars' l)
 
 -- | Runs a continuation on a 'Prod' of all of the input 'BVar's.
 --
@@ -1288,10 +1238,9 @@ withInps' l f = f (inpVars' l)
 --
 -- But just a little nicer!
 withInps
-    :: Known Length rs
-    => (Prod (BVar s rs) rs -> BP s rs a)
-    -> BP s rs a
-withInps = withInps' known
+    :: (BVar s r r -> BP s r a)
+    -> BP s r a
+withInps f = f BVInp
 
 -- | Apply 'OpB' over a 'Prod' of 'BVar's, as inputs. Provides
 -- "implicit-graph" back-propagation, with deferred evaluation.
@@ -1337,8 +1286,8 @@ withInps = withInps' known
 -- 'liftB' can be thought of as a "deferred evaluation" version of 'opVar'.
 liftB
     :: OpB s as '[a]
-    -> Prod (BVar s rs) as
-    -> BVar s rs a
+    -> Prod (BVar s r) as
+    -> BVar s r a
 liftB = flip BVOp
 
 
@@ -1370,8 +1319,8 @@ liftB = flip BVOp
 infixr 5 .$
 (.$)
     :: OpB s as '[a]
-    -> Prod (BVar s rs) as
-    -> BVar s rs a
+    -> Prod (BVar s r) as
+    -> BVar s r a
 (.$) = liftB
 
 
@@ -1395,8 +1344,8 @@ infixr 5 .$
 -- situations with this.
 liftB1
     :: OpB s '[a] '[b]
-    -> BVar s rs a
-    -> BVar s rs b
+    -> BVar s r a
+    -> BVar s r b
 liftB1 o = liftB o . only
 
 -- | Convenient wrapper over 'liftB' that takes an 'OpB' with two arguments
@@ -1420,9 +1369,9 @@ liftB1 o = liftB o . only
 -- situations with this.
 liftB2
     :: OpB s '[a,b] '[c]
-    -> BVar s rs a
-    -> BVar s rs b
-    -> BVar s rs c
+    -> BVar s r a
+    -> BVar s r b
+    -> BVar s r c
 liftB2 o x y = liftB o (x :< y :< Ø)
 
 -- | Convenient wrapper over 'liftB' that takes an 'OpB' with three arguments
@@ -1447,20 +1396,20 @@ liftB2 o x y = liftB o (x :< y :< Ø)
 -- situations with this.
 liftB3
     :: OpB s '[a,b,c] '[d]
-    -> BVar s rs a
-    -> BVar s rs b
-    -> BVar s rs c
-    -> BVar s rs d
+    -> BVar s r a
+    -> BVar s r b
+    -> BVar s r c
+    -> BVar s r d
 liftB3 o x y z = liftB o (x :< y :< z :< Ø)
 
 -- | For usage with 'withGADT', to handle constructors of a GADT.  See
 -- documentation for 'withGADT' for more information.
-data BPCont :: Type -> [Type] -> Type -> Type -> Type where
+data BPCont :: Type -> Type -> Type -> Type -> Type where
     BPC :: Every Num as
         => Tuple as
         -> (Tuple as -> a)
-        -> (Prod (BVar s rs) as -> BP s rs b)
-        -> BPCont s rs a b
+        -> (Prod (BVar s r) as -> BP s r b)
+        -> BPCont s r a b
 
 -- | Special __unsafe__ combinator that lets you pattern match and work on
 -- GADTs.
@@ -1502,10 +1451,10 @@ data BPCont :: Type -> [Type] -> Type -> Type -> Type where
 -- correctly or changes some of the values, this will not work.
 --
 withGADT
-    :: forall s rs a b. ()
-    => BVar s rs a
-    -> (a -> BPCont s rs a b)
-    -> BP s rs b
+    :: forall s r a b. ()
+    => BVar s r a
+    -> (a -> BPCont s r a b)
+    -> BP s r b
 withGADT v f = do
     x <- BP (resolveVar v)
     case f x of

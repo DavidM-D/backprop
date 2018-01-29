@@ -30,7 +30,7 @@
 module Numeric.Backprop.Internal
   ( OpB, OpBS(..)
   , runOpB, gradOpB, gradOpB'
-  , BPState(..), bpsSources
+  , BPState(..), bpsSource
   , BP(..)
   , BPInpRef(..)
   , BPNode(..), bpnOut, bpnRes, bpnGradFunc, bpnGradCache
@@ -47,7 +47,7 @@ import           Data.STRef
 import           Data.Type.Index
 import           Data.Type.Length
 import           Data.Type.Product
-import           Lens.Micro hiding    (ix)
+import           Lens.Micro
 import           Lens.Micro.TH
 import           Numeric.Backprop.Op
 import           Type.Class.Known
@@ -114,10 +114,10 @@ gradOpB' o xs = runST $ gradOpM' o xs
 
 -- | Reference to /usage sites/ for a given entity, used to get partial or
 -- total derivatives.
-data ForwardRefs s rs a
+data ForwardRefs s r a
     -- | A list of 'BPInpRef's pointing to places that use the entity, to
     -- provide partial derivatives.
-    = FRInternal ![BPInpRef s rs a]
+    = FRInternal ![BPInpRef s r a]
     -- | The entity is the terminal result of a BP, so its total derivative
     -- is fixed.
     | FRTerminal !(Maybe a)
@@ -135,10 +135,10 @@ instance Monoid (ForwardRefs s rs a) where
 
 -- | The "state" of a 'BP' action, which keeps track of what nodes, if any,
 -- refer to any of the inputs.
-data BPState :: Type -> [Type] -> Type where
-    BPS :: { _bpsSources :: !(Prod (ForwardRefs s rs) rs)
+data BPState :: Type -> Type -> Type where
+    BPS :: { _bpsSource :: !(ForwardRefs s r r)
            }
-        -> BPState s rs
+        -> BPState s r
 
 -- | A Monad allowing you to explicitly build hetereogeneous data
 -- dependency graphs and that the library can perform back-propagation on.
@@ -182,8 +182,8 @@ data BPState :: Type -> [Type] -> Type where
 -- 'Op' (or more precisely, an 'Numeric.Backprop.OpB', which is a subtype of
 -- 'OpM').  So, once you create your fancy 'BP' computation, you can
 -- transform it into an 'OpM' using 'Numeric.Backprop.bpOp'.
-newtype BP s rs a
-    = BP { bpST :: ReaderT (Tuple rs) (StateT (BPState s rs) (ST s)) a }
+newtype BP s r a
+    = BP { bpST :: ReaderT r (StateT (BPState s r) (ST s)) a }
     deriving (Functor, Applicative, Monad)
 
 -- | The basic unit of manipulation inside 'BP' (or inside an
@@ -213,62 +213,61 @@ newtype BP s rs a
 -- a 'BVar' you created using '+' or '-' or 'Numeric.Backprop.liftB', use
 -- 'Numeric.Backprop.bindVar' to force it first.  See documentation for
 -- 'Numeric.Backprop.bindVar' for more details.)
-data BVar :: Type -> [Type] -> Type -> Type where
+data BVar :: Type -> Type -> Type -> Type where
     -- | A BVar referring to a 'BPNode'
     BVNode  :: !(Index bs a)
-            -> !(STRef s (BPNode s rs as bs))
-            -> BVar s rs a
+            -> !(STRef s (BPNode s r as bs))
+            -> BVar s r a
     -- | A BVar referring to an environment input variable
-    BVInp   :: !(Index rs a)
-            -> BVar s rs a
+    BVInp   :: BVar s r r
     -- | A constant BVar that refers to a specific Haskell value
     BVConst :: !a
-            -> BVar s rs a
+            -> BVar s r a
     -- | A BVar that combines several other BVars using a function (an
     -- 'Op').  Essentially a branch of a tree.
-    BVOp    :: !(Prod (BVar s rs) as)
+    BVOp    :: !(Prod (BVar s r) as)
             -> !(OpB s as '[a])
-            -> BVar s rs a
+            -> BVar s r a
 
 -- | Used exclusively by 'ForwardRefs' to specify "where" and "how" to look
 -- for partial derivatives at usage sites of a given entity.
-data BPInpRef :: Type -> [Type] -> Type -> Type where
+data BPInpRef :: Type -> Type -> Type -> Type where
     -- | The entity is used in a 'BPNode', and as an Nth input
     IRNode  :: Every Num cs
             => !(Index bs a)
-            -> !(STRef s (BPNode s rs bs cs))
-            -> BPInpRef s rs a
+            -> !(STRef s (BPNode s r bs cs))
+            -> BPInpRef s r a
     -- | The entity is used in a 'BPPipe', and as an Nth input
     IRPipe  :: !(Index bs a)
-            -> !(STRef s (BPPipe s rs bs cs))
-            -> BPInpRef s rs a
+            -> !(STRef s (BPPipe s r bs cs))
+            -> BPInpRef s r a
     -- | The entity is used somehow in the terminal result of a 'BP', and
     -- so therefore has a fixed partial derivative contribution.
     IRConst :: !a
-            -> BPInpRef s rs a
+            -> BPInpRef s r a
 
 -- | A (stateful) node in the graph of operations/data dependencies in 'BP'
 -- that the library uses.  'BVar's can refer to these to get results from
 -- them, and 'BPInpRef's can refer to these to get partial derivatives from
 -- them.
-data BPNode :: Type -> [Type] -> [Type] -> [Type] -> Type where
-    BPN :: { _bpnOut       :: !(Prod (ForwardRefs s rs) bs)
+data BPNode :: Type -> Type -> [Type] -> [Type] -> Type where
+    BPN :: { _bpnOut       :: !(Prod (ForwardRefs s r) bs)
            , _bpnRes       :: !(Tuple bs)
            , _bpnGradFunc  :: !(Prod Maybe bs -> ST s (Tuple as))
            , _bpnGradCache :: !(Maybe (Tuple as))  -- nothing if is the "final output"
            }
-        -> BPNode s rs as bs
+        -> BPNode s r as bs
 
 -- | Essentially a "single-usage" 'BPNode'.  It's a stateful node, but only
 -- ever has a single consumer (and so its total derivative comes from
 -- a single partial derivative).  Used when keeping track of 'BVOp's.
-data BPPipe :: Type -> [Type] -> [Type] -> [Type] -> Type where
-    BPP :: { _bppOut       :: !(Prod (BPInpRef s rs) bs)
+data BPPipe :: Type -> Type -> [Type] -> [Type] -> Type where
+    BPP :: { _bppOut       :: !(Prod (BPInpRef s r) bs)
            , _bppRes       :: !(Tuple bs)
            , _bppGradFunc  :: !(Tuple bs -> ST s (Tuple as))
            , _bppGradCache :: !(Maybe (Tuple as))
            }
-        -> BPPipe s rs as bs
+        -> BPPipe s r as bs
 
 makeLenses ''BPState
 makeLenses ''BPNode
