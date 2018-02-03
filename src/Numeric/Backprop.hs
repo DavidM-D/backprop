@@ -57,6 +57,8 @@ module Numeric.Backprop (
   , liftOpN
   , liftOp1, liftOp2, liftOp3, liftOp4
   , lensVar, (^^.)
+  , traversalVar, (^^?), (^^..)
+  , sequenceVar
   , uncurryVar
   , backprop, evalBP, gradBP
   , Op(..)
@@ -139,6 +141,7 @@ module Numeric.Backprop (
 -- import           Type.Class.Witness
 -- import           Type.Reflection
 -- import qualified Generics.SOP           as SOP
+import           Data.Maybe
 import           Data.Reflection
 import           Lens.Micro
 import           Numeric.Backprop.Internal
@@ -165,6 +168,20 @@ infixl 8 ^^.
     -> Lens' b a
     -> BVar s a
 x ^^. l = lensVar l x
+
+(^^?)
+    :: forall a b s. (Reifies s W, Num a)
+    => BVar s b
+    -> Traversal' b a
+    -> Maybe (BVar s a)
+x ^^? t = traversalVar t listToMaybe x
+
+(^^..)
+    :: forall a b s. (Reifies s W, Num a)
+    => BVar s b
+    -> Traversal' b a
+    -> [BVar s a]
+x ^^.. t = traversalVar t id x
 
 uncurryVar
     :: (Num a, Num b, Num (a,b))

@@ -37,7 +37,7 @@ module Numeric.Backprop.Internal (
   , constVar
   , liftOpN
   , liftOp1, liftOp2, liftOp3, liftOp4
-  , lensVar
+  , lensVar, traversalVar, sequenceVar
   , backprop
   ) where
 
@@ -47,7 +47,7 @@ module Numeric.Backprop.Internal (
 -- import           Data.Monoid
 -- import           Lens.Micro hiding             (ix)
 import           Control.Exception
-import           Control.Lens  hiding             (Index, ix, traverse1, (:<))
+import           Control.Lens  hiding             (Index, traverse1, (:<))
 import           Control.Monad.Primitive
 import           Control.Monad.Reader
 import           Control.Monad.ST
@@ -65,6 +65,7 @@ import           System.IO.Unsafe
 import           Type.Class.Higher
 import           Type.Class.Witness
 import           Unsafe.Coerce
+import qualified Control.Lens                     as L
 import qualified Data.Vector.Mutable              as MV
 
 data BVar s a = BV { _bvRef :: !(BRef s)
@@ -93,7 +94,7 @@ forceBVar (BV !r !_) = forceBRef r `seq` ()
 data InpRef :: Type -> Type where
     IR :: Num a
        => { _irIx  :: !(BVar s b)
-          , _irUpd :: !(Lens' b a)
+          , _irUpd :: !(a -> b -> b)
           }
        -> InpRef a
 
@@ -157,7 +158,7 @@ liftOpN_ o !vs = case traverse1 (fmap I . bvConst) vs of
             , _tnGrad   = g
             }
     go :: forall a. Index as a -> BVar s a -> InpRef a
-    go i !v = forceBVar v `seq` (IR v id \\ every @_ @Num i)
+    go i !v = forceBVar v `seq` (IR v (+) \\ every @_ @Num i)
 
 liftOpN
     :: forall s as b. (Reifies s W, Num b, Every Num as)
@@ -177,7 +178,7 @@ liftOp1_ o (bvConst->Just x) = return . constVar . evalOp o $ (x ::< Ø)
 liftOp1_ o !v = forceBVar v `seq` insertNode tn y (reflect (Proxy @s))
   where
     (y,g) = runOpWith o (_bvVal v ::< Ø)
-    tn = TN { _tnInputs = IR v id :< Ø
+    tn = TN { _tnInputs = IR v (+) :< Ø
             , _tnGrad   = g
             }
 
@@ -202,7 +203,7 @@ liftOp2_ o !v !u = forceBVar v
              `seq` insertNode tn y (reflect (Proxy @s))
   where
     (y,g) = runOpWith o (_bvVal v ::< _bvVal u ::< Ø)
-    tn = TN { _tnInputs = IR v id :< IR u id :< Ø
+    tn = TN { _tnInputs = IR v (+) :< IR u (+) :< Ø
             , _tnGrad   = g
             }
 
@@ -231,7 +232,7 @@ liftOp3_ o !v !u !w = forceBVar v
                 `seq` insertNode tn y (reflect (Proxy @s))
   where
     (y, g) = runOpWith o (_bvVal v ::< _bvVal u ::< _bvVal w ::< Ø)
-    tn = TN { _tnInputs = IR v id :< IR u id :< IR w id :< Ø
+    tn = TN { _tnInputs = IR v (+) :< IR u (+) :< IR w (+) :< Ø
             , _tnGrad   = g
             }
 
@@ -263,7 +264,7 @@ liftOp4_ o !v !u !w !x = forceBVar v
                    `seq` insertNode tn y (reflect (Proxy @s))
   where
     (y, g) = runOpWith o (_bvVal v ::< _bvVal u ::< _bvVal w ::< _bvVal x ::< Ø)
-    tn = TN { _tnInputs = IR v id :< IR u id :< IR w id :< IR x id :< Ø
+    tn = TN { _tnInputs = IR v (+) :< IR u (+) :< IR w (+) :< IR x (+) :< Ø
             , _tnGrad   = g
             }
 
@@ -279,32 +280,80 @@ liftOp4 o !v !u !w !x = unsafePerformIO $ liftOp4_ o v u w x
 {-# INLINE liftOp4 #-}
 
 lensVar_
-    :: forall a b s. (Reifies s W, Num b, Num a)
+    :: forall a b s. (Reifies s W, Num a)
     => Lens' b a
     -> BVar s b
     -> IO (BVar s a)
 lensVar_ l !v = forceBVar v `seq` insertNode tn y (reflect (Proxy @s))
   where
     y = _bvVal v ^. l
-    tn = TN { _tnInputs = IR v l :< Ø
+    tn = TN { _tnInputs = IR v (over l . (+)) :< Ø
             , _tnGrad   = only_
             }
 
 lensVar
-    :: forall a b s. (Reifies s W, Num b, Num a)
+    :: forall a b s. (Reifies s W, Num a)
     => Lens' b a
     -> BVar s b
     -> BVar s a
 lensVar l !v = unsafePerformIO $ lensVar_ l v
 {-# INLINE lensVar #-}
 
--- -- prismVar_
--- --     :: forall a b s. (Reifies s W)
--- --     => Prism' a b
--- --     -> BVar s b
--- --     -> IO (Maybe (BVar s a))
--- -- prismVar_ l !v = forceBVar v `seq` insertNode tn (preflect (Proxy @s))
--- --   where
+traversalVar_
+    :: forall a b f s. (Reifies s W, Num a, Traversable f)
+    => Traversal' b a
+    -> ([a] -> f a)             -- ^ pick which ones to care about
+    -> BVar s b
+    -> IO (f (BVar s a))
+traversalVar_ t f !v = forceBVar v `seq` traverse go (f (_bvVal v ^.. t))
+  where
+    go :: a -> IO (BVar s a)
+    go y = insertNode tn y (reflect (Proxy @s))
+      where
+        tn = TN { _tnInputs = IR v (over t . (+)) :< Ø
+                , _tnGrad   = only_
+                }
+
+traversalVar
+    :: forall a b f s. (Reifies s W, Num a, Traversable f)
+    => Traversal' b a
+    -> ([a] -> f a)             -- ^ pick which ones to care about
+    -> BVar s b
+    -> f (BVar s a)
+traversalVar p f !v = unsafePerformIO $ traversalVar_ p f v
+
+sequenceVar_
+    :: forall a f i s.
+     ( Reifies s W
+     , TraversableWithIndex i f
+     , Ixed (f a)
+     , L.Index (f a) ~ i
+     , IxValue (f a) ~ a
+     , Num a
+     )
+    => BVar s (f a)
+    -> IO (f (BVar s a))
+sequenceVar_ !v = forceBVar v `seq` itraverse go (_bvVal v)
+  where
+    go :: i -> a -> IO (BVar s a)
+    go i y = insertNode tn y (reflect (Proxy @s))
+      where
+        tn = TN { _tnInputs = IR v (over (ix i) . (+)) :< Ø
+                , _tnGrad   = only_
+                }
+
+sequenceVar
+    :: forall a f i s.
+     ( Reifies s W
+     , TraversableWithIndex i f
+     , Ixed (f a)
+     , L.Index (f a) ~ i
+     , IxValue (f a) ~ a
+     , Num a
+     )
+    => BVar s (f a)
+    -> f (BVar s a)
+sequenceVar !v = unsafePerformIO $ sequenceVar_ v
 
 data SomeNum :: Type where
     SN  :: Num a
@@ -342,10 +391,10 @@ gradRunner _ R{..} (n,stns) dx = do
       let gs = _tnGrad (unsafeCoerce delt)
       zipWithPM_ propagate _tnInputs gs
     propagate :: forall x. InpRef x -> I x -> m ()
-    propagate (IR v ln) (I !d) = case _bvRef v of
-      BRInp   -> modifyMutVar' (unsafeCoerce dx) (ln %~ (+ d))    -- bad for tuples
+    propagate (IR v u) (I !d) = case _bvRef v of
+      BRInp   -> modifyMutVar' (unsafeCoerce dx) (u d)    -- bad for tuples
       BRIx !i -> flip (MV.modify _rDelta) i $ \case
-        SN p !y -> let y' = unsafeCoerce y & ln %~ (+d)
+        SN p !y -> let y' = u d (unsafeCoerce y)
                    in  y' `seq` SN p (unsafeCoerce y')
       BRC     -> return ()
 
