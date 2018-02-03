@@ -38,9 +38,13 @@ module Data.Type.Util (
   , for1_
   ) where
 
-import           Control.Applicative
-import           Data.Bifunctor
+-- import           Data.Bifunctor
 -- import           Data.Kind
+-- import           Lens.Micro
+-- import           Type.Class.Known
+-- import           Type.Family.List
+import           Control.Applicative
+import           Control.Lens hiding   (Index, Traversable1, traverse1, (:<))
 import           Data.Monoid hiding    (Sum)
 import           Data.Type.Conjunction
 import           Data.Type.Fin
@@ -50,11 +54,8 @@ import           Data.Type.Nat
 import           Data.Type.Product
 import           Data.Type.Sum
 import           Data.Type.Vector
-import           Lens.Micro
 import           Type.Class.Higher
--- import           Type.Class.Known
 import           Type.Class.Witness
--- import           Type.Family.List
 import           Type.Family.Nat
 
 -- | @'Replicate' n a@ is a list of @a@s repeated @n@ times.

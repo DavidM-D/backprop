@@ -33,7 +33,7 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      src
   exposed-modules:     Numeric.Backprop
-                       Numeric.Backprop.Iso
+                       -- Numeric.Backprop.Iso
                        Numeric.Backprop.Op
   other-modules:       Numeric.Backprop.Internal
                        Data.Type.Util
@@ -41,9 +41,9 @@ library
                      , ad
                      , generics-sop
                      , lens
-                     , microlens
-                     , microlens-mtl
-                     , microlens-th
+                     -- , microlens
+                     -- , microlens-mtl
+                     -- , microlens-th
                      , mtl
                      , primitive
                      , profunctors

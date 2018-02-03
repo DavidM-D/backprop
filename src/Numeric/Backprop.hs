@@ -57,7 +57,7 @@ module Numeric.Backprop (
   , liftOpN
   , liftOp1, liftOp2, liftOp3, liftOp4
   , lensVar, (^^.)
-  , traversalVar, (^^?), (^^..)
+  , prismVar, (^^?) -- , (^^..)
   , sequenceVar
   , uncurryVar
   , backprop, evalBP, gradBP
@@ -134,6 +134,7 @@ module Numeric.Backprop (
 -- import           Data.Type.Product
 -- import           Data.Type.Sum hiding   (index)
 -- import           Data.Type.Util
+-- import           Lens.Micro
 -- import           Lens.Micro.Mtl hiding  (view)
 -- import           Numeric.Backprop.Iso
 -- import           Type.Class.Higher
@@ -141,9 +142,9 @@ module Numeric.Backprop (
 -- import           Type.Class.Witness
 -- import           Type.Reflection
 -- import qualified Generics.SOP           as SOP
+import           Control.Lens
 import           Data.Maybe
 import           Data.Reflection
-import           Lens.Micro
 import           Numeric.Backprop.Internal
 import           Numeric.Backprop.Op
 
@@ -172,16 +173,17 @@ x ^^. l = lensVar l x
 (^^?)
     :: forall a b s. (Reifies s W, Num a)
     => BVar s b
-    -> Traversal' b a
+    -> Prism' b a
     -> Maybe (BVar s a)
-x ^^? t = traversalVar t listToMaybe x
+x ^^? p = prismVar p x
 
-(^^..)
-    :: forall a b s. (Reifies s W, Num a)
-    => BVar s b
-    -> Traversal' b a
-    -> [BVar s a]
-x ^^.. t = traversalVar t id x
+-- (^^..)
+--     :: forall a b s. (Reifies s W, Num a)
+--     => BVar s b
+--     -> Traversal' b a
+--     -> [BVar s a]
+-- x ^^.. t = sequenceVar _
+-- -- x ^^.. t = sequenceVar (x ^^. t)
 
 uncurryVar
     :: (Num a, Num b, Num (a,b))

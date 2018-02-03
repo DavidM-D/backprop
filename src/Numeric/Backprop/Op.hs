@@ -69,6 +69,10 @@ module Numeric.Backprop.Op (
   , sinhOp, coshOp, tanhOp, asinhOp, acoshOp, atanhOp
   ) where
 
+-- import           Lens.Micro
+-- import           Lens.Micro.Extras
+-- import           Numeric.Backprop.Iso
+import           Control.Lens hiding            ((:<), only, (:>))
 import           Data.Bifunctor
 import           Data.Coerce
 import           Data.Reflection                (Reifies)
@@ -80,12 +84,9 @@ import           Data.Type.Nat
 import           Data.Type.Product
 import           Data.Type.Util
 import           Data.Type.Vector hiding        (head')
-import           Lens.Micro
-import           Lens.Micro.Extras
 import           Numeric.AD
 import           Numeric.AD.Internal.Reverse    (Reverse, Tape)
 import           Numeric.AD.Mode.Forward hiding (grad')
-import           Numeric.Backprop.Iso
 import           Type.Class.Higher
 import           Type.Class.Known
 import           Type.Class.Witness

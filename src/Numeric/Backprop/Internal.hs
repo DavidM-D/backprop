@@ -37,7 +37,7 @@ module Numeric.Backprop.Internal (
   , constVar
   , liftOpN
   , liftOp1, liftOp2, liftOp3, liftOp4
-  , lensVar, traversalVar, sequenceVar
+  , lensVar, prismVar, sequenceVar
   , backprop
   ) where
 
@@ -299,13 +299,12 @@ lensVar
 lensVar l !v = unsafePerformIO $ lensVar_ l v
 {-# INLINE lensVar #-}
 
-traversalVar_
-    :: forall a b f s. (Reifies s W, Num a, Traversable f)
-    => Traversal' b a
-    -> ([a] -> f a)             -- ^ pick which ones to care about
+prismVar_
+    :: forall a b s. (Reifies s W, Num a)
+    => Prism' b a
     -> BVar s b
-    -> IO (f (BVar s a))
-traversalVar_ t f !v = forceBVar v `seq` traverse go (f (_bvVal v ^.. t))
+    -> IO (Maybe (BVar s a))
+prismVar_ t !v = forceBVar v `seq` traverse go (_bvVal v ^? t)
   where
     go :: a -> IO (BVar s a)
     go y = insertNode tn y (reflect (Proxy @s))
@@ -314,14 +313,16 @@ traversalVar_ t f !v = forceBVar v `seq` traverse go (f (_bvVal v ^.. t))
                 , _tnGrad   = only_
                 }
 
-traversalVar
-    :: forall a b f s. (Reifies s W, Num a, Traversable f)
-    => Traversal' b a
-    -> ([a] -> f a)             -- ^ pick which ones to care about
+prismVar
+    :: forall a b s. (Reifies s W, Num a)
+    => Prism' b a
     -> BVar s b
-    -> f (BVar s a)
-traversalVar p f !v = unsafePerformIO $ traversalVar_ p f v
+    -> Maybe (BVar s a)
+prismVar p !v = unsafePerformIO $ prismVar_ p v
 
+-- TODO: this can be done much more efficiently by dumping out the contents
+-- into an array, and wouldn't need the Ixed or TraversableWithIndex
+-- constraint?
 sequenceVar_
     :: forall a f i s.
      ( Reifies s W
@@ -354,6 +355,29 @@ sequenceVar
     => BVar s (f a)
     -> f (BVar s a)
 sequenceVar !v = unsafePerformIO $ sequenceVar_ v
+
+-- foldVar_
+--     :: forall a b s. (Reifies s W, Num a)
+--     => Traversal' b a
+--     -> BVar s b
+--     -> IO [BVar s a]
+-- foldVar_ t !v = forceBVar v `seq` (sequenceVar_ =<< v')
+--   where
+--     v' :: IO (BVar s [a])
+--     v' = insertNode tn (_bvVal v ^.. t) (reflect (Proxy @s))
+--     tn = undefined
+--     -- tn :: TapeNode [a]
+--     -- tn = TN {
+--     --         }
+--   -- where
+--   --   go :: i -> a -> IO (BVar s a)
+--   --   go i y = insertNode tn y (reflect (Proxy @s))
+--   --     where
+--   --       tn = TN { _tnInputs = IR v (over (ix i) . (+)) :< Ø
+--   --               , _tnGrad   = only_
+--   --               }
+
+
 
 data SomeNum :: Type where
     SN  :: Num a
